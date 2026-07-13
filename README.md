@@ -21,6 +21,53 @@
 
 官方数据文件不提交到 GitHub。请按 `data/README.md` 放置本地数据。
 
+## Run Locally
+
+本项目第一版只依赖 Python 标准库。
+
+```powershell
+python server.py
+```
+
+打开：
+
+```text
+http://127.0.0.1:8000
+```
+
+健康检查：
+
+```text
+http://127.0.0.1:8000/api/health
+```
+
+推荐接口：
+
+```http
+POST /api/recommend
+Content-Type: application/json
+```
+
+请求示例：
+
+```json
+{
+  "user_id": 3,
+  "messages": [
+    "中午这顿饭你帮我安排一下。",
+    "两个人吃，最近在减脂。"
+  ]
+}
+```
+
+## Test
+
+运行核心逻辑自测：
+
+```powershell
+python tests/test_agent.py
+```
+
 ## Repository
 
 Remote target:

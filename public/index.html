@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>个性化膳食规划 Agent</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <h1>健康约束可验证的膳食规划 Agent</h1>
+        <p>官方菜谱检索 + 健康档案约束 + 规则校验 + 推荐解释</p>
+      </div>
+      <div class="status" id="status">启动中</div>
+    </header>
+
+    <main class="layout">
+      <section class="panel controls">
+        <h2>输入</h2>
+        <label>
+          用户健康档案
+          <select id="userSelect"></select>
+        </label>
+        <div class="profile" id="profile"></div>
+
+        <label>
+          官方对话用例
+          <select id="caseSelect">
+            <option value="">自定义输入</option>
+          </select>
+        </label>
+
+        <label>
+          多轮对话
+          <textarea id="messages" rows="8" placeholder="每一行作为一轮对话，例如：&#10;给我想一顿两个人的晚饭。&#10;一个人想吃辣，一个人一点辣都不想碰。"></textarea>
+        </label>
+
+        <button id="recommendBtn">生成推荐</button>
+      </section>
+
+      <section class="panel">
+        <h2>推荐菜单</h2>
+        <div id="answer" class="answer"></div>
+        <div id="menu" class="menu"></div>
+      </section>
+
+      <section class="panel">
+        <h2>约束解析</h2>
+        <pre id="constraints"></pre>
+      </section>
+
+      <section class="panel">
+        <h2>约束评分卡</h2>
+        <div id="scoreCard" class="score-grid"></div>
+        <h3>风险提示</h3>
+        <ul id="warnings"></ul>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
