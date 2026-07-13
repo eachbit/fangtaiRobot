@@ -113,6 +113,8 @@ def build_answer(menu: list[dict], constraints: Constraints, warnings: list[str]
         parts.append(f"已优先考虑：{'、'.join(constraints.health_goals)}。")
     if constraints.allergens:
         parts.append(f"已避开过敏食材：{'、'.join(constraints.allergens)}。")
+    if constraints.avoid_ingredients:
+        parts.append(f"已避开忌口食材：{'、'.join(constraints.avoid_ingredients)}。")
     if warnings:
         parts.append(f"注意：{'；'.join(warnings)}")
     return "".join(parts)

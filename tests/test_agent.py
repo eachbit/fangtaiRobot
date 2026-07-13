@@ -49,6 +49,20 @@ def main():
     inferred_names = " ".join(item["name"] + item["ingredients"] for item in inferred["menu"])
     assert "海鲜" not in inferred_names, "dialog-inferred allergy should avoid seafood"
 
+    disliked_oyster = recommend(
+        None,
+        [
+            "我是一名健身需求的大学生，我有高血压的病症，我喜欢肉类",
+            "我要摄入高蛋白",
+            "我不喜欢吃海蛎子",
+        ],
+    )
+    disliked_text = " ".join(item["name"] + item["ingredients"] for item in disliked_oyster["menu"])
+    blocked_terms = ["海蛎", "海蛎子", "牡蛎", "生蚝"]
+    assert not any(term in disliked_text for term in blocked_terms), "explicit dislike should filter oyster aliases"
+    assert "海蛎子" in disliked_oyster["constraints"]["avoid_ingredients"]
+    assert "海蛎子" not in disliked_oyster["constraints"]["allergens"]
+
     print(f"ok: {len(recipes)} recipes, {len(users)} users, {len(cases)} dialog cases")
 
 

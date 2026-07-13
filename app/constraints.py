@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from .food_terms import expand_terms
 from .models import Constraints, UserProfile
 
 
@@ -46,6 +47,8 @@ INGREDIENT_KEYWORDS = [
 
 ALLERGEN_PATTERNS = [
     "海鲜",
+    "贝类",
+    "海蛎子",
     "花生",
     "牛奶",
     "鸡蛋",
@@ -124,7 +127,7 @@ def extract_constraints(messages: list[str], user: UserProfile | None = None) ->
         if ingredient in text:
             constraints.preferred_ingredients.append(ingredient)
 
-    for match in re.finditer(r"不(?:要|吃|想吃)([\u4e00-\u9fa5]{1,6})", text):
+    for match in re.finditer(r"(?:不|别)(?:喜欢吃|爱吃|想吃|要吃|吃|要)([\u4e00-\u9fa5]{1,8})", text):
         constraints.avoid_ingredients.append(match.group(1))
 
     minutes_match = re.search(r"(\d+)\s*分钟", text)
@@ -145,10 +148,10 @@ def extract_constraints(messages: list[str], user: UserProfile | None = None) ->
         constraints.scene = "夏季清爽"
 
     constraints.health_goals = _dedupe(constraints.health_goals)
-    constraints.allergens = _dedupe(constraints.allergens)
+    constraints.allergens = _dedupe(expand_terms(constraints.allergens))
     constraints.avoid_tastes = _dedupe(constraints.avoid_tastes)
     constraints.preferred_ingredients = _dedupe(constraints.preferred_ingredients)
-    constraints.avoid_ingredients = _dedupe(constraints.avoid_ingredients)
+    constraints.avoid_ingredients = _dedupe(expand_terms(constraints.avoid_ingredients))
     return constraints
 
 
@@ -207,7 +210,7 @@ def infer_profile_from_text(text: str) -> dict:
             profile["allergens"].append(allergen)
 
     profile["special_groups"] = _dedupe(profile["special_groups"])
-    profile["allergens"] = _dedupe(profile["allergens"])
+    profile["allergens"] = _dedupe(expand_terms(profile["allergens"]))
     profile["health_goals"] = _dedupe(profile["health_goals"])
     return profile
 

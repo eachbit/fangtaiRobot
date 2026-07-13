@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .food_terms import contains_food_term
 from .models import Constraints, Recipe, UserProfile
 
 
@@ -15,11 +16,11 @@ def check_recipe(recipe: Recipe, constraints: Constraints, user: UserProfile | N
     hard_failures: list[str] = []
 
     for allergen in constraints.allergens:
-        if allergen and allergen in text:
+        if allergen and contains_food_term(text, allergen):
             hard_failures.append(f"命中过敏食材：{allergen}")
 
     for avoid in constraints.avoid_ingredients:
-        if avoid and avoid in text:
+        if avoid and contains_food_term(text, avoid):
             hard_failures.append(f"命中用户明确不想吃的食材：{avoid}")
 
     if "辣" in constraints.avoid_tastes and ("辣" in text or "重口味" in text):
