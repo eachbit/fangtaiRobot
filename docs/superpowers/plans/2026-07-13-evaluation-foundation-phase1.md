@@ -23,6 +23,9 @@ Phase 1 不通过修改预期结果来隐藏当前高级能力缺口。它必须
 
 - Create `tests/evaluation/__init__.py`: 评测包入口。
 - Create `tests/evaluation/schemas.py`: 健康客户、场景、标准答案、违反项和报告结构。
+- Replace `data/50个用户健康档案（脱敏）.json`: 使用 `50个用户健康档案_详细版7.13.json` 的 50 人详细数据。
+- Modify `app/models.py`: 为正式用户档案增加身体测量和体检指标类型。
+- Modify `app/data_loader.py`: 严格解析并验证详细健康档案。
 - Create `tests/evaluation/persona_factory.py`: 官方档案适配和合成健康客户生成。
 - Modify `app/recipe_features.py`: 提供统一的整桌可判分菜谱特征。
 - Create `tests/evaluation/deterministic_oracle.py`: 本地确定性判分器。
@@ -55,7 +58,7 @@ Phase 1 不通过修改预期结果来隐藏当前高级能力缺口。它必须
 ```python
 import unittest
 
-from tests.evaluation.schemas import HealthPersona, MenuExpectation, Scenario
+from tests.evaluation.schemas import CheckupMetrics, HealthPersona, MenuExpectation, Scenario
 
 
 class EvaluationSchemaTests(unittest.TestCase):
@@ -68,8 +71,21 @@ class EvaluationSchemaTests(unittest.TestCase):
                 gender="男",
                 age=62,
                 labor_intensity="低",
+                height_cm=171.1,
+                weight_kg=68.2,
+                bmi=23.3,
                 pregnancy_week=None,
                 taste_preference="清淡",
+                checkup_metrics=CheckupMetrics(
+                    fasting_glucose_mmol_l=7.3,
+                    systolic_blood_pressure_mm_hg=146,
+                    diastolic_blood_pressure_mm_hg=93,
+                    total_cholesterol_mmol_l=4.63,
+                    triglycerides_mmol_l=1.16,
+                    ldl_mmol_l=2.58,
+                    hdl_mmol_l=1.29,
+                    uric_acid_umol_l=271,
+                ),
                 special_groups=("高血压", "高血糖"),
                 allergens=("花生",),
                 health_goals=("降压", "控糖"),
@@ -101,6 +117,18 @@ Implement these frozen dataclasses in `schemas.py`:
 
 ```python
 @dataclass(frozen=True)
+class CheckupMetrics:
+    fasting_glucose_mmol_l: float | None = None
+    systolic_blood_pressure_mm_hg: int | None = None
+    diastolic_blood_pressure_mm_hg: int | None = None
+    total_cholesterol_mmol_l: float | None = None
+    triglycerides_mmol_l: float | None = None
+    ldl_mmol_l: float | None = None
+    hdl_mmol_l: float | None = None
+    uric_acid_umol_l: int | None = None
+
+
+@dataclass(frozen=True)
 class HealthPersona:
     persona_id: str
     primary_bucket: str
@@ -108,8 +136,12 @@ class HealthPersona:
     gender: str | None = None
     age: int | None = None
     labor_intensity: str | None = None
+    height_cm: float | None = None
+    weight_kg: float | None = None
+    bmi: float | None = None
     pregnancy_week: str | None = None
     taste_preference: str | None = None
+    checkup_metrics: CheckupMetrics | None = None
     special_groups: tuple[str, ...] = ()
     allergens: tuple[str, ...] = ()
     health_goals: tuple[str, ...] = ()
@@ -137,11 +169,11 @@ class Scenario:
     dialogue_mode: str = "single_turn"
 ```
 
-Add explicit `to_dict()` and `from_dict()` methods that convert JSON lists back to tuples. Reject unknown `primary_bucket`, unknown `dialogue_mode`, empty `scenario_id`, and empty `intent` values with `ValueError`.
+Add explicit `to_dict()` and `from_dict()` methods that convert JSON lists back to tuples and preserve typed `CheckupMetrics`. Reject unknown `primary_bucket`, unknown `dialogue_mode`, empty `scenario_id`, empty `intent`, non-finite measurements, non-positive height/weight, negative BMI, partial blood pressure, and impossible blood-pressure ordering with path-aware `ValueError`.
 
 - [ ] **Step 4: Add violation and report contracts**
 
-Add frozen `Violation(code, severity, message, evidence)`, `ScenarioResult(scenario_id, passed, violations, elapsed_ms)`, `FailureRecord(scenario_id, seed, commit_sha, original_messages, minimized_messages, violations, elapsed_ms)`, and `EvaluationReport(total, passed, failures, coverage, metrics, timings)` dataclasses. Restrict severity to `blocking`, `known_gap`, and `soft_review`.
+Add frozen `Violation(code, severity, message, evidence)`, `ScenarioResult(scenario_id, passed, violations, elapsed_ms)`, `FailureRecord(scenario_id, seed, commit_sha, original_messages, minimized_messages, violations, elapsed_ms)`, and `EvaluationReport(total, passed, failures, coverage, metrics, timings)` dataclasses. Restrict severity to `blocking`, `known_gap`, and `soft_review`. Add tests proving detailed measurements and checkup metrics survive strict JSON round trips and remain deeply immutable.
 
 - [ ] **Step 5: Run schema tests**
 
@@ -156,7 +188,83 @@ git add tests/evaluation/__init__.py tests/evaluation/schemas.py tests/test_eval
 git commit -m "test: define evaluation contracts"
 ```
 
-### Task 2: Generate Persistent Health Personas
+### Task 2: Adopt the Detailed Official Health Profiles
+
+**Files:**
+- Replace: `data/50个用户健康档案（脱敏）.json`
+- Modify: `app/models.py`
+- Modify: `app/data_loader.py`
+- Create: `tests/test_detailed_profiles.py`
+
+- [ ] **Step 1: Write failing detailed-profile tests**
+
+```python
+import unittest
+
+from app.data_loader import load_users
+
+
+class DetailedProfileTests(unittest.TestCase):
+    def test_all_profiles_have_body_measurements_and_expected_checkup_coverage(self) -> None:
+        users = load_users()
+        self.assertEqual(len(users), 50)
+        self.assertTrue(all(user.height_cm > 0 and user.weight_kg > 0 and user.bmi > 0 for user in users))
+        self.assertEqual(sum(user.checkup_metrics is not None for user in users), 40)
+        self.assertEqual(sum(user.checkup_metrics is None for user in users), 10)
+
+    def test_profile_three_parses_blood_pressure_and_glucose(self) -> None:
+        user = next(item for item in load_users() if item.id == 3)
+        self.assertEqual(user.height_cm, 180.1)
+        self.assertEqual(user.weight_kg, 78.2)
+        self.assertEqual(user.bmi, 24.1)
+        self.assertEqual(user.checkup_metrics.fasting_glucose_mmol_l, 7.3)
+        self.assertEqual(user.checkup_metrics.systolic_blood_pressure_mm_hg, 146)
+        self.assertEqual(user.checkup_metrics.diastolic_blood_pressure_mm_hg, 93)
+```
+
+- [ ] **Step 2: Run the tests to verify the old data contract fails**
+
+Run: `python -m unittest tests.test_detailed_profiles -v`
+
+Expected: FAIL because `UserProfile` does not expose measurements or checkup metrics.
+
+- [ ] **Step 3: Replace the official data file exactly**
+
+Copy `C:\Users\32757\Desktop\50个用户健康档案_详细版7.13.json` to `data\50个用户健康档案（脱敏）.json` without reformatting or changing values. Verify the copied JSON contains exactly 50 unique positive IDs and the new fields `身高_cm`, `体重_kg`, `BMI`, and `体检指标`.
+
+- [ ] **Step 4: Add typed production health metrics**
+
+Add frozen `HealthMetrics` to `app/models.py` with optional fasting glucose, systolic/diastolic blood pressure, total cholesterol, triglycerides, LDL, HDL, and uric acid. Add required `height_cm`, `weight_kg`, `bmi`, and optional `checkup_metrics` to `UserProfile`; retain `raw` unchanged for API compatibility.
+
+- [ ] **Step 5: Strictly parse and validate detailed fields**
+
+In `app/data_loader.py`:
+
+- parse every body measurement as a finite positive number;
+- verify `round(weight_kg / (height_cm / 100) ** 2, 1)` differs from supplied BMI by no more than `0.1`;
+- parse `血压_mmHg` using anchored `^(\d{2,3})/(\d{2,3})$` and require systolic pressure greater than diastolic pressure;
+- require either an empty checkup object or all seven official metric keys;
+- reject unknown or partial metric keys with a user-ID-specific `ValueError`;
+- preserve an empty metric object as `checkup_metrics=None`, never fabricate values.
+
+- [ ] **Step 6: Add data-quality regression tests**
+
+Use temporary JSON fixtures to assert invalid BMI, malformed blood pressure, partial metrics, non-finite numbers, duplicate IDs, and missing measurement fields all fail with a stable path or user ID in the error.
+
+- [ ] **Step 7: Run detailed-profile and full legacy tests**
+
+Run: `python -m unittest tests.test_detailed_profiles tests.test_agent tests.test_nutrition_scoring -v`
+
+Expected: PASS; existing user API behavior remains compatible while detailed fields are present in `user.raw`.
+
+- [ ] **Step 8: Commit**
+
+```powershell
+git add data/50个用户健康档案（脱敏）.json app/models.py app/data_loader.py tests/test_detailed_profiles.py
+git commit -m "feat: load detailed health profiles"
+```
+
+### Task 3: Generate Persistent Health Personas
 
 **Files:**
 - Create: `tests/evaluation/persona_factory.py`
@@ -168,7 +276,8 @@ git commit -m "test: define evaluation contracts"
 import collections
 import unittest
 
-from tests.evaluation.persona_factory import build_personas
+from app.data_loader import load_users
+from tests.evaluation.persona_factory import build_personas, persona_from_user
 
 
 class PersonaFactoryTests(unittest.TestCase):
@@ -185,6 +294,13 @@ class PersonaFactoryTests(unittest.TestCase):
 
     def test_same_seed_produces_identical_personas(self) -> None:
         self.assertEqual(build_personas(7, 50), build_personas(7, 50))
+
+    def test_official_detailed_measurements_are_preserved(self) -> None:
+        user = next(item for item in load_users() if item.id == 3)
+        persona = persona_from_user(user)
+        self.assertEqual((persona.height_cm, persona.weight_kg, persona.bmi), (180.1, 78.2, 24.1))
+        self.assertEqual(persona.checkup_metrics.fasting_glucose_mmol_l, 7.3)
+        self.assertEqual(persona.checkup_metrics.systolic_blood_pressure_mm_hg, 146)
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -211,7 +327,7 @@ Use largest-remainder allocation so arbitrary counts still sum exactly. Reject c
 
 - [ ] **Step 4: Cover official and extended health axes**
 
-Load the official 50 profiles through `app.data_loader.load_users()`, preserve all official fields, and set `source_user_id` so the runner can call the real profile path. Synthesize additional combinations from high blood pressure, high blood glucose, high uric acid, pregnancy, lactation, children, older adults, activity level, and official allergens. Synthetic personas use `source_user_id=None` and disclose their health ground truth through generated dialogue. Extended high-risk conditions must set `primary_bucket="high_risk"` and expect clarification rather than a medical treatment rule.
+Load the official 50 detailed profiles through `app.data_loader.load_users()`, preserve all official fields including height, weight, BMI and optional checkup metrics, and set `source_user_id` so the runner can call the real profile path. Map production `HealthMetrics` into immutable evaluation `CheckupMetrics` field by field. Synthesize additional combinations from high blood pressure, high blood glucose, high uric acid, pregnancy, lactation, children, older adults, activity level, BMI category, and official allergens. Synthetic personas use `source_user_id=None`, receive internally consistent measurements, and disclose their health ground truth through generated dialogue. Never synthesize missing official checkup values. Extended high-risk conditions must set `primary_bucket="high_risk"` and expect clarification rather than a medical treatment rule.
 
 - [ ] **Step 5: Add negative-control tests**
 
@@ -230,7 +346,7 @@ git add tests/evaluation/persona_factory.py tests/test_persona_factory.py
 git commit -m "test: generate diverse health personas"
 ```
 
-### Task 3: Provide Deterministic Recipe Structure Features
+### Task 4: Provide Deterministic Recipe Structure Features
 
 **Files:**
 - Modify: `app/recipe_features.py`
@@ -282,7 +398,7 @@ git add app/recipe_features.py tests/test_recipe_structure.py
 git commit -m "feat: expose deterministic recipe structure"
 ```
 
-### Task 4: Build the Deterministic Oracle
+### Task 5: Build the Deterministic Oracle
 
 **Files:**
 - Create: `tests/evaluation/deterministic_oracle.py`
@@ -350,7 +466,7 @@ git add tests/evaluation/deterministic_oracle.py tests/test_deterministic_oracle
 git commit -m "test: add deterministic evaluation oracle"
 ```
 
-### Task 5: Generate Measurable Advanced Scenarios
+### Task 6: Generate Measurable Advanced Scenarios
 
 **Files:**
 - Create: `tests/evaluation/scenario_generator.py`
@@ -412,7 +528,7 @@ git add tests/evaluation/scenario_generator.py tests/evaluation/language_mutator
 git commit -m "test: generate advanced health scenarios"
 ```
 
-### Task 6: Minimize Failures and Produce Versioned Reports
+### Task 7: Minimize Failures and Produce Versioned Reports
 
 **Files:**
 - Create: `tests/evaluation/failure_minimizer.py`
@@ -489,7 +605,7 @@ git add tests/evaluation/failure_minimizer.py tests/evaluation/report.py tests/e
 git commit -m "test: report reproducible evaluation failures"
 ```
 
-### Task 7: Add the Development-Only Multi-Agent Candidate Contract
+### Task 8: Add the Development-Only Multi-Agent Candidate Contract
 
 **Files:**
 - Create: `tests/evaluation/agent_candidates.py`
@@ -547,7 +663,7 @@ git add tests/evaluation/agent_candidates.py tests/test_agent_candidates.py docs
 git commit -m "test: define safe multi-agent candidates"
 ```
 
-### Task 8: Seed Reviewed Scenarios, Known Gaps, and Holdout Data
+### Task 9: Seed Reviewed Scenarios, Known Gaps, and Holdout Data
 
 **Files:**
 - Create: `tests/corpus/seeds/advanced_scenarios.json`
@@ -591,7 +707,7 @@ git add tests/corpus tests/test_evaluation_corpus.py
 git commit -m "test: seed advanced evaluation corpus"
 ```
 
-### Task 9: Document and Verify Phase 1
+### Task 10: Document and Verify Phase 1
 
 **Files:**
 - Modify: `README.md`
@@ -642,7 +758,8 @@ Expected: PR `#1` remains draft, base is `main`, and head is `feature/nutrition-
 ## Phase 1 Acceptance Gate
 
 - [ ] Health personas satisfy exclusive `20/25/30/15/10` bucket quotas.
-- [ ] Official profile fields remain intact and synthetic profiles are reproducible by seed.
+- [ ] All 50 official profiles expose validated height, weight and BMI; exactly 40 expose all seven checkup metrics and 10 preserve metrics as unknown.
+- [ ] Official detailed profile fields remain intact and synthetic profiles are internally consistent and reproducible by seed.
 - [ ] Recipe structure classification exposes meat, vegetable, temperature, role, and cooking method with unknown coverage reported honestly.
 - [ ] Deterministic oracle has stable violation codes and cannot downgrade existing hard constraints.
 - [ ] Generated cases include ratio, relative revision, cooking diversity, nutrition tradeoff, ambiguity, negative expression, and multi-person conflict.
