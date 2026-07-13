@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from .models import Constraints, Recipe, UserProfile
+from .nutrition_calculator import calculate_recipe_nutrition
+from .nutrition_scoring import score_table_nutrition
 from .recipe_features import classify_recipe
 from .retriever import rank_recipes
 
 
 def plan_meal(recipes: list[Recipe], constraints: Constraints, user: UserProfile | None) -> dict:
     ranked = rank_recipes(recipes, constraints, user)
+    ranked = _rank_with_nutrition(ranked, constraints, user)
     menu_size = _menu_size(constraints)
     selected = _diverse_select(ranked, menu_size)
     warnings = _collect_warnings(selected)
@@ -28,16 +31,65 @@ def plan_meal(recipes: list[Recipe], constraints: Constraints, user: UserProfile
                 "labels": recipe.labels,
                 "score": item["score"],
                 "reason": "；".join(item["reasons"]) if item["reasons"] else "来自官方菜谱库，适合作为备选菜品。",
+                "nutrition": item["nutrition"],
             }
         )
 
     score_card = build_score_card(menu, constraints, selected)
+    table_nutrition = score_table_nutrition(
+        [item["nutrition"] for item in menu], constraints, user
+    )
     return {
         "menu": menu,
         "score_card": score_card,
+        "nutrition": table_nutrition,
+        "nutrition_score": {
+            "score": table_nutrition["score"],
+            "assessment": table_nutrition["assessment"],
+            "components": table_nutrition["components"],
+            "macro_energy_ratios": table_nutrition["macro_energy_ratios"],
+        },
+        "confidence": table_nutrition["confidence"],
         "warnings": warnings,
         "answer": build_answer(menu, constraints, warnings),
     }
+
+
+def _rank_with_nutrition(
+    ranked: list[dict],
+    constraints: Constraints,
+    user: UserProfile | None,
+) -> list[dict]:
+    special_groups = set(constraints.inferred_profile.get("special_groups", []))
+    goals = set(constraints.health_goals)
+    if user:
+        special_groups.update(user.special_groups)
+        goals.update(user.health_goals)
+
+    enriched: list[dict] = []
+    for item in ranked:
+        enriched_item = dict(item)
+        nutrition = calculate_recipe_nutrition(item["recipe"])
+        nutrients = nutrition["nutrients"]
+        coverage = float(nutrition["ingredient_match_coverage"])
+        adjustment = 0.0
+        if "高血压" in special_groups or "降压" in goals:
+            adjustment -= nutrients["sodium_mg"] / 100.0 * coverage
+        if "高血糖" in special_groups or "控糖" in goals:
+            adjustment -= nutrients["sugar_g"] * 0.5 * coverage
+        if "增肌" in goals:
+            adjustment += nutrients["protein_g"] * 0.1 * coverage
+        if "减脂" in goals:
+            adjustment -= nutrients["fat_g"] * 0.15 * coverage
+        if goals or special_groups:
+            adjustment -= (1.0 - coverage) * 2.0
+        enriched_item["nutrition"] = nutrition
+        enriched_item["nutrition_adjusted_score"] = float(item["score"]) + adjustment
+        enriched.append(enriched_item)
+    enriched.sort(
+        key=lambda item: (-item["nutrition_adjusted_score"], item["recipe"].id)
+    )
+    return enriched
 
 
 def _menu_size(constraints: Constraints) -> int:
