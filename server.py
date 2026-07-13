@@ -6,7 +6,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from app.agent import get_dialog_cases, get_recipes, get_users, recommend
+from app.agent import get_dialog_cases, get_recipes, get_users, recommend_with_session
+from app.session_store import MenuVersionConflict
 
 
 ROOT = Path(__file__).resolve().parent
@@ -37,13 +38,40 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
             user_id = body.get("user_id")
             messages = body.get("messages")
+            is_delta = False
             if messages is None and body.get("message"):
                 messages = [body["message"]]
+                is_delta = True
             if not isinstance(messages, list) or not all(isinstance(item, str) for item in messages):
                 self._json({"error": "messages must be a string list"}, status=400)
                 return
-            result = recommend(int(user_id) if user_id not in (None, "") else None, messages)
+            session_id = body.get("session_id")
+            menu_version = body.get("menu_version")
+            if session_id is not None and not isinstance(session_id, str):
+                self._json({"error": "session_id must be a string"}, status=400)
+                return
+            if menu_version is not None and (
+                not isinstance(menu_version, int) or isinstance(menu_version, bool) or menu_version < 1
+            ):
+                self._json({"error": "menu_version must be a positive integer"}, status=400)
+                return
+            result = recommend_with_session(
+                int(user_id) if user_id not in (None, "") else None,
+                messages,
+                session_id=session_id,
+                menu_version=menu_version,
+                is_delta=is_delta,
+            )
             self._json(result)
+        except MenuVersionConflict as exc:
+            self._json(
+                {
+                    "error": "menu_version_conflict",
+                    "menu_version": exc.current_version,
+                    "retryable": True,
+                },
+                status=409,
+            )
         except Exception as exc:
             self._json({"error": "internal_error", "detail": str(exc)}, status=500)
 

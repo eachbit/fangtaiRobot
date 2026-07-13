@@ -6,6 +6,7 @@ from .constraints import extract_constraints
 from .data_loader import load_dialog_cases, load_recipes, load_users
 from .models import UserProfile
 from .planner import plan_meal
+from .session_store import MenuVersionConflict, session_store
 
 
 @lru_cache(maxsize=1)
@@ -42,3 +43,48 @@ def recommend(user_id: int | None, messages: list[str]) -> dict:
         "constraints": constraints.to_dict(),
         **result,
     }
+
+
+def recommend_with_session(
+    user_id: int | None,
+    messages: list[str],
+    *,
+    session_id: str | None = None,
+    menu_version: int | None = None,
+    is_delta: bool = False,
+) -> dict:
+    snapshot = session_store.get(session_id) if session_id else None
+    if snapshot is not None and snapshot.user_id != user_id:
+        snapshot = None
+
+    if snapshot is not None and is_delta:
+        merged_messages = [*snapshot.messages, *messages]
+    else:
+        merged_messages = list(messages)
+
+    result = recommend(user_id, merged_messages)
+    changes = {
+        "mode": "regenerated" if snapshot else "initial",
+        "kept_dishes": [],
+        "replaced_dishes": [],
+        "change_count": 0,
+    }
+    result["changes"] = changes
+
+    if snapshot is None:
+        created = session_store.create(user_id, merged_messages, result)
+        active_session_id = created.session_id
+        active_version = created.menu_version
+    else:
+        updated = session_store.update(
+            snapshot.session_id,
+            menu_version,
+            merged_messages,
+            result,
+        )
+        active_session_id = updated.session_id
+        active_version = updated.menu_version
+
+    result["session_id"] = active_session_id
+    result["menu_version"] = active_version
+    return result
