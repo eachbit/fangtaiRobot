@@ -71,7 +71,7 @@ def revise_menu(
     for index, item in enumerate(slots):
         if item is not None:
             continue
-        candidate = _pick_candidate(ranked, used_ids, None)
+        candidate = _pick_candidate(ranked, used_ids | original_ids, None)
         if candidate is None:
             continue
         new_item = _menu_item(candidate)
@@ -79,14 +79,26 @@ def revise_menu(
         used_ids.add(new_item["id"])
 
     menu = [item for item in slots if item is not None]
+    warnings = _collect_menu_warnings(menu, recipe_by_id, constraints, user)
     kept_ids = [item["id"] for item in menu if item["id"] in {old["id"] for old in old_menu}]
     changes = {
         "mode": "minimal_revision",
         "kept_dishes": kept_ids,
         "replaced_dishes": replacements,
-        "change_count": len(replacements) + max(0, len(old_menu) - desired_size),
+        "change_count": (
+            len(replacements)
+            + max(0, len(old_menu) - desired_size)
+            + max(0, desired_size - len(old_menu))
+        ),
     }
-    return finalize_menu(menu, constraints, user, changes=changes, minimal_change=True)
+    return finalize_menu(
+        menu,
+        constraints,
+        user,
+        warnings=warnings,
+        changes=changes,
+        minimal_change=True,
+    )
 
 
 def _revision_failure(
@@ -122,6 +134,23 @@ def _requested_replacement_positions(messages: list[str]) -> set[int]:
         if number and number > 0:
             positions.add(number - 1)
     return positions
+
+
+def _collect_menu_warnings(
+    menu: list[dict[str, Any]],
+    recipe_by_id: dict[int, Recipe],
+    constraints: Constraints,
+    user: UserProfile | None,
+) -> list[str]:
+    warnings: list[str] = []
+    for item in menu:
+        recipe = recipe_by_id.get(item["id"])
+        if recipe is None:
+            continue
+        for warning in check_recipe(recipe, constraints, user)["warnings"]:
+            if warning not in warnings:
+                warnings.append(warning)
+    return warnings
 
 
 def _menu_item(item: dict[str, Any]) -> dict[str, Any]:

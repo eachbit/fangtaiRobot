@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 
 from app.agent import recommend_with_session
+from app.models import Constraints, Recipe
+from app.planner import plan_meal
 
 
 class MenuRevisionTests(unittest.TestCase):
@@ -131,6 +133,54 @@ class MenuRevisionTests(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in second["menu"]], old_ids[:3])
         self.assertEqual(second["changes"]["change_count"], 1)
+
+    def test_increasing_dish_count_reports_added_positions(self) -> None:
+        first = recommend_with_session(None, ["推荐2道晚餐"])
+        old_ids = [item["id"] for item in first["menu"]]
+
+        second = recommend_with_session(
+            None,
+            ["增加到4道菜，原来的保留"],
+            session_id=first["session_id"],
+            menu_version=first["menu_version"],
+            is_delta=True,
+        )
+        new_ids = [item["id"] for item in second["menu"]]
+
+        self.assertEqual(new_ids[:2], old_ids)
+        self.assertEqual(len(new_ids), 4)
+        self.assertEqual(second["changes"]["change_count"], 2)
+        self.assertEqual(len(new_ids), len(set(new_ids)))
+
+    def test_revision_preserves_health_warnings(self) -> None:
+        first = recommend_with_session(None, ["推荐3道晚餐"])
+
+        second = recommend_with_session(
+            None,
+            ["我有高血压，其他菜保留"],
+            session_id=first["session_id"],
+            menu_version=first["menu_version"],
+            is_delta=True,
+        )
+
+        expected_warning = any(
+            term in item["name"] + item["ingredients"] for item in second["menu"] for term in ["咸", "酱", "腊"]
+        )
+        if expected_warning:
+            self.assertTrue(second["warnings"])
+            self.assertIn("注意", second["answer"])
+
+    def test_full_reset_fallback_never_reintroduces_excluded_recipe(self) -> None:
+        recipes = [Recipe(1, "唯一晚餐", "鸡胸肉100g", "蒸熟", ["晚餐"])]
+
+        result = plan_meal(
+            recipes,
+            Constraints(meal="晚餐", requested_dish_count=1),
+            None,
+            excluded_recipe_ids={1},
+        )
+
+        self.assertEqual(result["menu"], [])
 
 
 if __name__ == "__main__":

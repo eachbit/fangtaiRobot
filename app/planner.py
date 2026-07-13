@@ -24,8 +24,14 @@ def plan_meal(
 
     if not selected and recipes:
         fallback_ranked = rank_recipes(recipes, constraints, user, limit=5)
+        if excluded_recipe_ids:
+            fallback_ranked = [
+                item for item in fallback_ranked if item["recipe"].id not in excluded_recipe_ids
+            ]
+        fallback_ranked = _rank_with_nutrition(fallback_ranked, constraints, user)
         selected = fallback_ranked[:1]
-        warnings.append("未找到完全理想方案，已返回最接近的官方菜谱。")
+        if selected:
+            warnings.append("未找到完全理想方案，已返回最接近的官方菜谱。")
 
     menu = []
     for item in selected:
