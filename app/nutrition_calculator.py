@@ -28,6 +28,8 @@ SOURCE_QUALITY = {
     "unknown": 0.0,
 }
 
+SEASONING_NAMES = {"盐", "食用油", "白砂糖", "生抽", "老抽", "酱油", "料酒"}
+
 
 def calculate_recipe_nutrition(
     recipe: Recipe,
@@ -38,10 +40,13 @@ def calculate_recipe_nutrition(
     totals = {key: 0.0 for key in NUTRIENT_KEYS}
     ingredient_details: list[dict[str, Any]] = []
     missing: list[str] = []
+    unweighted: list[str] = []
     matched_count = 0
     weighted_count = 0
     known_weight = 0.0
+    portion_weight = 0.0
     source_quality_total = 0.0
+    uses_derived_data = False
 
     for ingredient in parsed:
         food = repository.resolve(ingredient.canonical_name)
@@ -59,9 +64,12 @@ def calculate_recipe_nutrition(
             continue
 
         matched_count += 1
+        uses_derived_data = uses_derived_data or food.source == "USDA-derived estimate"
         detail["source"] = food.source
         detail["source_id"] = food.source_id
         if ingredient.grams is not None:
+            if ingredient.canonical_name not in SEASONING_NAMES:
+                portion_weight += float(ingredient.grams)
             factor = float(ingredient.grams) / 100.0
             item_nutrients = {
                 key: food.nutrients_per_100g[key] * factor for key in NUTRIENT_KEYS
@@ -69,6 +77,8 @@ def calculate_recipe_nutrition(
             for key, value in item_nutrients.items():
                 totals[key] += value
             detail["nutrients"] = _round_nutrients(item_nutrients)
+        elif ingredient.canonical_name not in unweighted:
+            unweighted.append(ingredient.canonical_name)
         ingredient_details.append(detail)
 
     total_count = len(parsed)
@@ -78,7 +88,11 @@ def calculate_recipe_nutrition(
     confidence_score = _confidence_score(match_coverage, weight_coverage, source_quality)
     if match_coverage < 1.0:
         confidence_score = min(confidence_score, 0.79)
-    servings, serving_range = _estimate_servings(recipe, known_weight)
+    if uses_derived_data:
+        confidence_score = min(confidence_score, 0.79)
+    category = classify_recipe(recipe)
+    serving_weight = known_weight if category == "soup" else portion_weight
+    servings, serving_range = _estimate_servings(recipe, serving_weight)
 
     return {
         "nutrients": _round_nutrients(totals),
@@ -86,13 +100,17 @@ def calculate_recipe_nutrition(
         "estimated_servings": servings,
         "serving_range": serving_range,
         "known_weight_g": round(known_weight, 2),
+        "portion_weight_g": round(serving_weight, 2),
         "missing_ingredients": missing,
+        "unweighted_ingredients": unweighted,
         "ingredient_match_coverage": round(match_coverage, 4),
         "weight_coverage": round(weight_coverage, 4),
         "confidence": {
             "score": round(confidence_score, 4),
             "level": _confidence_level(confidence_score),
-            "reasons": _confidence_reasons(parsed, match_coverage, weight_coverage),
+            "reasons": _confidence_reasons(
+                parsed, match_coverage, weight_coverage, uses_derived_data
+            ),
         },
     }
 
@@ -117,6 +135,7 @@ def _confidence_reasons(
     ingredients: list[ParsedIngredient],
     match_coverage: float,
     weight_coverage: float,
+    uses_derived_data: bool,
 ) -> list[str]:
     reasons: list[str] = []
     if not ingredients:
@@ -129,6 +148,8 @@ def _confidence_reasons(
         reasons.append("包含适量或少许的默认用量")
     if any(item.amount_source == "estimated" for item in ingredients):
         reasons.append("包含体积或自然单位换算")
+    if uses_derived_data:
+        reasons.append("包含派生营养数据")
     if not reasons:
         reasons.append("食材与重量均完整匹配")
     return reasons

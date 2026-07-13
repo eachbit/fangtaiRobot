@@ -93,6 +93,40 @@ class RecipeNutritionTests(unittest.TestCase):
         self.assertEqual(result["weight_coverage"], 0.0)
         self.assertEqual(result["confidence"]["level"], "low")
 
+    def test_matched_food_without_convertible_weight_is_reported_unweighted(self) -> None:
+        recipe = Recipe(6, "番茄拼盘", "番茄2个", "切片", ["蔬菜"])
+
+        result = calculate_recipe_nutrition(recipe, self.repository)
+
+        self.assertEqual(result["missing_ingredients"], [])
+        self.assertEqual(result["unweighted_ingredients"], ["番茄"])
+        self.assertEqual(result["nutrients"]["kcal"], 0.0)
+        self.assertNotEqual(result["confidence"]["level"], "high")
+
+    def test_seasoning_weight_does_not_inflate_non_soup_servings(self) -> None:
+        recipe = Recipe(
+            7,
+            "清炒番茄",
+            "番茄400g；食用油100g；生抽100g；盐20g",
+            "炒熟",
+            ["蔬菜"],
+        )
+
+        result = calculate_recipe_nutrition(recipe, self.repository)
+
+        self.assertEqual(result["portion_weight_g"], 400.0)
+        self.assertEqual(result["estimated_servings"], 2.0)
+
+    def test_derived_nutrition_data_cannot_receive_high_confidence(self) -> None:
+        recipe = Recipe(8, "番茄土豆", "番茄200g；土豆200g", "煮熟", ["蔬菜"])
+
+        result = calculate_recipe_nutrition(recipe, self.repository)
+
+        self.assertEqual(result["ingredient_match_coverage"], 1.0)
+        self.assertEqual(result["weight_coverage"], 1.0)
+        self.assertEqual(result["confidence"]["level"], "medium")
+        self.assertIn("包含派生营养数据", result["confidence"]["reasons"])
+
 
 if __name__ == "__main__":
     unittest.main()
