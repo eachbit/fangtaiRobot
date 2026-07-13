@@ -67,22 +67,25 @@ _ALIASES = {
 }
 
 
-def _number_value(value: str) -> float | int:
+def _number_value(value: str) -> float | int | None:
     if value == "半":
         return 0.5
     if "/" in value:
         numerator, denominator = value.split("/", 1)
-        return float(numerator) / float(denominator)
+        denominator_value = float(denominator)
+        if denominator_value == 0:
+            return None
+        return float(numerator) / denominator_value
     number = float(value)
     return int(number) if number.is_integer() else number
 
 
 def _canonicalize(name: str) -> tuple[str, str]:
     name = name.strip(" \t:：,，")
-    for alias, canonical in sorted(_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
-        if alias in name:
-            notes = f"处理状态：{alias}" if alias != "西红柿" else "别名归一化：西红柿"
-            return canonical, notes
+    canonical = _ALIASES.get(name)
+    if canonical:
+        notes = f"处理状态：{name}" if name != "西红柿" else "别名归一化：西红柿"
+        return canonical, notes
     return name, ""
 
 
@@ -100,9 +103,10 @@ def parse_ingredient_segment(text: str) -> ParsedIngredient:
     preparation_notes = re.findall(r"（[^）]*）|\([^)]*\)", segment)
     for preparation in preparation_notes:
         notes = _append_note(notes, preparation)
+    working_segment = re.sub(r"（[^）]*）|\([^)]*\)", "", segment)
 
-    quantity_match = _QUANTITY.search(segment)
-    fuzzy_match = _FUZZY.search(segment) if quantity_match is None else None
+    quantity_match = _QUANTITY.search(working_segment)
+    fuzzy_match = _FUZZY.search(working_segment) if quantity_match is None else None
     amount: float | int | None = None
     unit: str | None = None
     grams: float | int | None = None
@@ -112,45 +116,56 @@ def parse_ingredient_segment(text: str) -> ParsedIngredient:
     if quantity_match:
         amount = _number_value(quantity_match.group("number"))
         source_unit = quantity_match.group("unit").lower()
-        unit = {
-            "克": "g",
-            "千克": "kg",
-            "公斤": "kg",
-            "毫升": "ml",
-        }.get(source_unit, source_unit)
-        amount_source = "explicit"
-        if unit == "g":
+        if amount is None:
+            notes = _append_note(notes, f"非法数量：{quantity_match.group('number')}")
+        else:
+            unit = {
+                "克": "g",
+                "千克": "kg",
+                "公斤": "kg",
+                "毫升": "ml",
+            }.get(source_unit, source_unit)
+        if amount is not None and unit == "g":
             grams = amount
+            amount_source = "explicit"
             confidence = 0.98
-        elif unit == "kg":
+        elif amount is not None and unit == "kg":
             grams = amount * 1000
+            amount_source = "explicit"
             confidence = 0.98
-        elif unit == "ml":
+        elif amount is not None and unit == "ml":
             grams = amount
+            amount_source = "estimated"
             confidence = 0.82
             notes = _append_note(notes, "按1g/ml近似换算")
-        elif unit in _SPOON_GRAMS:
+        elif amount is not None and unit in _SPOON_GRAMS:
             grams = amount * _SPOON_GRAMS[unit]
+            amount_source = "estimated"
             confidence = 0.7
             notes = _append_note(notes, "通用容量近似")
-        elif unit == "个":
-            confidence = 0.7
-            if "蛋" in segment:
+        elif amount is not None and unit == "个":
+            if "蛋" in working_segment:
                 grams = amount * 50
+                amount_source = "estimated"
+                confidence = 0.7
                 notes = _append_note(notes, "按每个蛋50g近似换算")
             else:
                 amount_source = "unknown"
-        elif unit == "瓣":
+                confidence = 0.2
+        elif amount is not None and unit == "瓣":
             amount_source = "unknown"
-            confidence = 0.0
-        segment = segment[: quantity_match.start()] + segment[quantity_match.end() :]
+            confidence = 0.2
+        working_segment = (
+            working_segment[: quantity_match.start()] + working_segment[quantity_match.end() :]
+        )
     elif fuzzy_match:
-        segment = segment[: fuzzy_match.start()] + segment[fuzzy_match.end() :]
+        working_segment = (
+            working_segment[: fuzzy_match.start()] + working_segment[fuzzy_match.end() :]
+        )
         amount_source = "default"
         confidence = 0.4
 
-    segment = re.sub(r"（[^）]*）|\([^)]*\)", "", segment)
-    raw_name = re.sub(r"\s+", "", segment).strip(" \t:：,，")
+    raw_name = re.sub(r"\s+", "", working_segment).strip(" \t:：,，")
     canonical_name, alias_note = _canonicalize(raw_name)
     notes = _append_note(notes, alias_note)
 

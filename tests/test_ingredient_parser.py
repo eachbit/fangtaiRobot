@@ -32,7 +32,7 @@ class ParseIngredientSegmentTests(unittest.TestCase):
         self.assertEqual(parsed.amount, 250)
         self.assertEqual(parsed.unit, "ml")
         self.assertEqual(parsed.grams, 250)
-        self.assertEqual(parsed.amount_source, "explicit")
+        self.assertEqual(parsed.amount_source, "estimated")
         self.assertLess(parsed.confidence, 0.9)
         self.assertIn("1g/ml", parsed.notes)
 
@@ -43,12 +43,13 @@ class ParseIngredientSegmentTests(unittest.TestCase):
         self.assertEqual(eggs.amount, 2)
         self.assertEqual(eggs.unit, "个")
         self.assertEqual(eggs.grams, 100)
-        self.assertEqual(eggs.amount_source, "explicit")
+        self.assertEqual(eggs.amount_source, "estimated")
         self.assertLessEqual(eggs.confidence, 0.75)
         self.assertEqual(tomato.amount, 0.5)
         self.assertEqual(tomato.canonical_name, "番茄")
         self.assertIsNone(tomato.grams)
         self.assertEqual(tomato.amount_source, "unknown")
+        self.assertGreater(tomato.confidence, 0)
 
     def test_converts_generic_egg_count(self) -> None:
         parsed = parse_ingredient_segment("蛋2个")
@@ -57,7 +58,7 @@ class ParseIngredientSegmentTests(unittest.TestCase):
         self.assertEqual(parsed.amount, 2)
         self.assertEqual(parsed.unit, "个")
         self.assertEqual(parsed.grams, 100)
-        self.assertEqual(parsed.amount_source, "explicit")
+        self.assertEqual(parsed.amount_source, "estimated")
 
     def test_normalizes_garlic_cloves_without_estimating_weight(self) -> None:
         parsed = parse_ingredient_segment("大蒜2瓣")
@@ -67,6 +68,7 @@ class ParseIngredientSegmentTests(unittest.TestCase):
         self.assertEqual(parsed.unit, "瓣")
         self.assertIsNone(parsed.grams)
         self.assertEqual(parsed.amount_source, "unknown")
+        self.assertGreater(parsed.confidence, 0)
 
     def test_normalizes_garlic_fuzzy_amount(self) -> None:
         parsed = parse_ingredient_segment("大蒜少许")
@@ -87,8 +89,33 @@ class ParseIngredientSegmentTests(unittest.TestCase):
             with self.subTest(text=text):
                 parsed = parse_ingredient_segment(text)
                 self.assertEqual((parsed.amount, parsed.unit, parsed.grams), expected)
-                self.assertEqual(parsed.amount_source, "explicit")
+                self.assertEqual(parsed.amount_source, "estimated")
                 self.assertLessEqual(parsed.confidence, 0.75)
+
+    def test_rejects_zero_denominator_without_crashing(self) -> None:
+        parsed = parse_ingredient_segment("面粉1/0g")
+
+        self.assertIsNone(parsed.amount)
+        self.assertIsNone(parsed.unit)
+        self.assertIsNone(parsed.grams)
+        self.assertEqual(parsed.amount_source, "unknown")
+        self.assertIn("非法数量", parsed.notes)
+
+    def test_ignores_quantities_inside_preparation_notes(self) -> None:
+        parsed = parse_ingredient_segment("鸡肉（去皮，2克）")
+
+        self.assertEqual(parsed.raw_name, "鸡肉")
+        self.assertIsNone(parsed.amount)
+        self.assertIsNone(parsed.grams)
+        self.assertEqual(parsed.amount_source, "unknown")
+        self.assertIn("去皮，2克", parsed.notes)
+
+    def test_does_not_apply_aliases_to_compound_ingredient_names(self) -> None:
+        ginger_beef = parse_ingredient_segment("姜丝牛肉100g")
+        tomato_sauce = parse_ingredient_segment("西红柿酱100g")
+
+        self.assertEqual(ginger_beef.canonical_name, "姜丝牛肉")
+        self.assertEqual(tomato_sauce.canonical_name, "西红柿酱")
 
     def test_uses_defaults_for_fuzzy_amounts(self) -> None:
         cases = {
