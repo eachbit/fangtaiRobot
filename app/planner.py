@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .models import Constraints, Recipe, UserProfile
+from .recipe_features import classify_recipe
 from .retriever import rank_recipes
 
 
@@ -53,6 +54,8 @@ def _menu_size(constraints: Constraints) -> int:
 
 
 def _diverse_select(ranked: list[dict], size: int) -> list[dict]:
+    if size >= 3:
+        return _balanced_select(ranked, size)
     selected: list[dict] = []
     used_names: set[str] = set()
     for item in ranked:
@@ -64,6 +67,46 @@ def _diverse_select(ranked: list[dict], size: int) -> list[dict]:
         if len(selected) >= size:
             break
     return selected
+
+
+def _balanced_select(ranked: list[dict], size: int) -> list[dict]:
+    selected: list[dict] = []
+    used_names: set[str] = set()
+    category_targets = _category_targets(size)
+    for category in category_targets:
+        item = _first_by_category(ranked, category, used_names)
+        if item:
+            selected.append(item)
+            used_names.add(item["recipe"].name)
+    for item in ranked:
+        recipe = item["recipe"]
+        if recipe.name in used_names:
+            continue
+        if classify_recipe(recipe) == "dessert" and len(selected) < max(1, size - 1):
+            continue
+        selected.append(item)
+        used_names.add(recipe.name)
+        if len(selected) >= size:
+            break
+    return selected[:size]
+
+
+def _category_targets(size: int) -> list[str]:
+    if size <= 3:
+        return ["staple", "meat", "vegetable"]
+    if size == 4:
+        return ["staple", "meat", "vegetable", "soup"]
+    return ["staple", "meat", "meat", "vegetable", "vegetable", "soup"]
+
+
+def _first_by_category(ranked: list[dict], category: str, used_names: set[str]) -> dict | None:
+    for item in ranked:
+        recipe = item["recipe"]
+        if recipe.name in used_names:
+            continue
+        if classify_recipe(recipe) == category:
+            return item
+    return None
 
 
 def _collect_warnings(selected: list[dict]) -> list[str]:

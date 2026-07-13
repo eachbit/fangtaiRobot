@@ -75,6 +75,16 @@ def main():
     assert four_dishes["constraints"]["requested_dish_count"] == 4
     assert len(four_dishes["menu"]) == 4
 
+    no_spicy = recommend(None, ["我不能吃辣，晚饭清淡一点，推荐3道菜"])
+    spicy_text = " ".join(item["name"] + item["ingredients"] + " ".join(item["labels"]) for item in no_spicy["menu"])
+    assert "辣" in no_spicy["constraints"]["avoid_tastes"]
+    assert "辣" not in spicy_text and "重口味" not in spicy_text
+
+    not_too_sweet = recommend(None, ["给我推荐个早餐吧，别太甜，最好十分钟左右就能弄好，推荐2道"])
+    sweet_text = " ".join(item["name"] + item["ingredients"] + " ".join(item["labels"]) for item in not_too_sweet["menu"])
+    assert "甜" in not_too_sweet["constraints"]["avoid_tastes"]
+    assert "甜" not in sweet_text
+
     print(f"ok: {len(recipes)} recipes, {len(users)} users, {len(cases)} dialog cases")
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .health_rules import check_recipe
 from .models import Constraints, Recipe, UserProfile
+from .recipe_features import classify_recipe, is_bad_breakfast, is_breakfast_friendly
 
 
 MEAL_COMPATIBILITY = {
@@ -34,6 +35,8 @@ def rank_recipes(
         health = check_recipe(recipe, constraints, user)
         if not health["passed"]:
             continue
+        if constraints.meal == "早餐" and is_bad_breakfast(recipe):
+            continue
         score, reasons = score_recipe(recipe, constraints)
         if score <= 0:
             continue
@@ -60,6 +63,8 @@ def score_recipe(recipe: Recipe, constraints: Constraints) -> tuple[int, list[st
         if constraints.meal in labels_text or any(hint in all_text for hint in hints):
             score += 16
             reasons.append(f"适合{constraints.meal}")
+        elif constraints.meal == "早餐" and not is_breakfast_friendly(recipe):
+            score -= 25
 
     if constraints.taste and constraints.taste in all_text:
         score += 14
@@ -108,6 +113,16 @@ def score_recipe(recipe: Recipe, constraints: Constraints) -> tuple[int, list[st
             score += 3
         elif constraints.meal is None:
             score += 1
+
+    if constraints.requested_dish_count and constraints.requested_dish_count >= 4:
+        category = classify_recipe(recipe)
+        if category in {"meat", "vegetable", "staple", "soup"}:
+            score += 3
+        if category == "dessert" and constraints.scene != "聚餐":
+            score -= 5
+
+    if constraints.meal in {"午餐", "晚餐"} and classify_recipe(recipe) == "dessert":
+        score -= 14
 
     return score, reasons
 

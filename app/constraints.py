@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from .food_terms import expand_terms
+from .food_terms import contains_food_term, expand_terms
 from .models import Constraints, UserProfile
 
 
@@ -114,14 +114,20 @@ def extract_constraints(messages: list[str], user: UserProfile | None = None) ->
     if dish_count_match:
         constraints.requested_dish_count = _parse_chinese_number(dish_count_match.group(1))
 
+    constraints.avoid_tastes.extend(_extract_avoid_tastes(text))
+
     for taste, keywords in TASTE_KEYWORDS.items():
+        if taste == "偏辣" and "辣" in constraints.avoid_tastes:
+            continue
+        if taste in ("甜", "酸甜") and "甜" in constraints.avoid_tastes:
+            continue
         if _contains_any(text, keywords):
             constraints.taste = taste
 
-    if "别辣" in text or "不辣" in text or "一点辣都不想" in text:
-        constraints.avoid_tastes.append("辣")
-        if constraints.taste == "偏辣":
-            constraints.taste = "清淡"
+    if "辣" in constraints.avoid_tastes and constraints.taste == "偏辣":
+        constraints.taste = "清淡"
+    if "甜" in constraints.avoid_tastes and constraints.taste in ("甜", "酸甜"):
+        constraints.taste = None
 
     for goal, keywords in HEALTH_KEYWORDS.items():
         if _contains_any(text, keywords):
@@ -156,6 +162,10 @@ def extract_constraints(messages: list[str], user: UserProfile | None = None) ->
     constraints.avoid_tastes = _dedupe(constraints.avoid_tastes)
     constraints.preferred_ingredients = _dedupe(constraints.preferred_ingredients)
     constraints.avoid_ingredients = _dedupe(expand_terms(constraints.avoid_ingredients))
+    constraints.preferred_ingredients = _remove_blocked_preferred_ingredients(
+        constraints.preferred_ingredients,
+        constraints.allergens + constraints.avoid_ingredients,
+    )
     return constraints
 
 
@@ -196,7 +206,12 @@ def infer_profile_from_text(text: str) -> dict:
         if _contains_any(text, keywords):
             profile["special_groups"].append(group)
 
+    avoid_tastes = _extract_avoid_tastes(text)
     for taste, keywords in TASTE_KEYWORDS.items():
+        if taste == "偏辣" and "辣" in avoid_tastes:
+            continue
+        if taste in ("甜", "酸甜") and "甜" in avoid_tastes:
+            continue
         if _contains_any(text, keywords):
             profile["taste_preference"] = taste
 
@@ -217,6 +232,26 @@ def infer_profile_from_text(text: str) -> dict:
     profile["allergens"] = _dedupe(expand_terms(profile["allergens"]))
     profile["health_goals"] = _dedupe(profile["health_goals"])
     return profile
+
+
+def _extract_avoid_tastes(text: str) -> list[str]:
+    avoid: list[str] = []
+    if any(pattern in text for pattern in ["别辣", "不辣", "不吃辣", "不能吃辣", "不要辣", "一点辣都不想", "少辣"]):
+        avoid.append("辣")
+    if any(pattern in text for pattern in ["别太甜", "不甜", "不吃甜", "不能吃甜", "不要甜", "少甜", "不要太甜"]):
+        avoid.append("甜")
+    if any(pattern in text for pattern in ["别太油", "不油", "少油", "不要油", "不能太油"]):
+        avoid.append("油")
+    return _dedupe(avoid)
+
+
+def _remove_blocked_preferred_ingredients(preferred: list[str], blocked: list[str]) -> list[str]:
+    result: list[str] = []
+    for ingredient in preferred:
+        if any(contains_food_term(ingredient, value) or contains_food_term(value, ingredient) for value in blocked):
+            continue
+        result.append(ingredient)
+    return result
 
 
 def _parse_chinese_number(value: str) -> int | None:

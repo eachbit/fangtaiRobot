@@ -23,8 +23,13 @@ def check_recipe(recipe: Recipe, constraints: Constraints, user: UserProfile | N
         if avoid and contains_food_term(text, avoid):
             hard_failures.append(f"命中用户明确不想吃的食材：{avoid}")
 
-    if "辣" in constraints.avoid_tastes and ("辣" in text or "重口味" in text):
-        hard_failures.append("用户要求不辣，但菜谱标签或食材包含辣味")
+    for taste in constraints.avoid_tastes:
+        if taste == "辣" and ("辣" in text or "重口味" in text):
+            hard_failures.append("用户要求不辣，但菜谱标签或食材包含辣味")
+        if taste == "甜" and ("甜" in text or "糖" in text or "蜂蜜" in text):
+            hard_failures.append("用户要求不甜，但菜谱标签或食材包含甜味")
+        if taste == "油" and ("油炸" in text or "肥肉" in text):
+            hard_failures.append("用户要求少油，但菜谱标签或食材偏油")
 
     special_groups = []
     if user:
