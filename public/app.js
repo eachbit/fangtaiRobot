@@ -29,7 +29,9 @@ async function init() {
 
 function renderUsers() {
   const select = $("userSelect");
-  select.innerHTML = state.users
+  select.innerHTML =
+    `<option value="">从对话自动识别用户特征</option>` +
+    state.users
     .map((user) => `<option value="${user.id}">用户 ${user.id}：${user.性别} / ${user.年龄}岁 / ${user.口味偏好}</option>`)
     .join("");
   renderProfile();
@@ -56,7 +58,12 @@ function bindEvents() {
 
 function renderProfile() {
   const user = currentUser();
-  if (!user) return;
+  if (!user) {
+    $("profile").innerHTML = `
+      不使用固定健康档案。系统会从对话中识别年龄、性别、过敏、疾病/特殊人群、口味偏好和健康目标。
+    `;
+    return;
+  }
   $("profile").innerHTML = `
     <strong>特殊人群：</strong>${arrayText(user.特殊人群)}<br>
     <strong>过敏食材：</strong>${arrayText(user.过敏食材)}<br>
@@ -65,7 +72,9 @@ function renderProfile() {
 }
 
 function currentUser() {
-  const id = Number($("userSelect").value);
+  const value = $("userSelect").value;
+  if (!value) return null;
+  const id = Number(value);
   return state.users.find((user) => user.id === id);
 }
 
@@ -84,7 +93,7 @@ async function recommend() {
     const result = await api("/api/recommend", {
       method: "POST",
       body: JSON.stringify({
-        user_id: Number($("userSelect").value),
+        user_id: $("userSelect").value ? Number($("userSelect").value) : null,
         messages,
       }),
     });

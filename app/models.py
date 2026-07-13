@@ -38,6 +38,7 @@ class Constraints:
     max_minutes: int | None = None
     difficulty: str | None = None
     scene: str | None = None
+    inferred_profile: dict[str, Any] = field(default_factory=dict)
     raw_messages: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -53,4 +54,5 @@ class Constraints:
             "max_minutes": self.max_minutes,
             "difficulty": self.difficulty,
             "scene": self.scene,
+            "inferred_profile": self.inferred_profile,
         }

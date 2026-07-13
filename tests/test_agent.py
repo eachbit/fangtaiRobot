@@ -33,6 +33,22 @@ def main():
     assert multi_turn["constraints"]["people_count"] == 2
     assert "减脂" in multi_turn["constraints"]["health_goals"]
 
+    inferred = recommend(
+        None,
+        [
+            "我是男生，45岁，有高血压，对海鲜过敏。",
+            "晚上想吃清淡一点，还想减脂。",
+        ],
+    )
+    inferred_profile = inferred["constraints"]["inferred_profile"]
+    assert inferred_profile["gender"] == "男"
+    assert inferred_profile["age"] == 45
+    assert "高血压" in inferred_profile["special_groups"]
+    assert "海鲜" in inferred_profile["allergens"]
+    assert "减脂" in inferred["constraints"]["health_goals"]
+    inferred_names = " ".join(item["name"] + item["ingredients"] for item in inferred["menu"])
+    assert "海鲜" not in inferred_names, "dialog-inferred allergy should avoid seafood"
+
     print(f"ok: {len(recipes)} recipes, {len(users)} users, {len(cases)} dialog cases")
 
 

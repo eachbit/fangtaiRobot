@@ -44,6 +44,29 @@ INGREDIENT_KEYWORDS = [
     "鸡肉",
 ]
 
+ALLERGEN_PATTERNS = [
+    "海鲜",
+    "花生",
+    "牛奶",
+    "鸡蛋",
+    "虾",
+    "蟹",
+    "坚果",
+    "芒果",
+    "羊肉",
+]
+
+SPECIAL_GROUP_KEYWORDS = {
+    "高血压": ["高血压", "血压高", "降血压", "降压"],
+    "高血糖": ["高血糖", "血糖高", "控糖", "糖尿病"],
+    "高尿酸": ["高尿酸", "尿酸高", "痛风", "降尿酸"],
+    "孕妇": ["孕妇", "怀孕", "孕期"],
+    "备孕": ["备孕"],
+    "哺乳期": ["哺乳", "哺乳期"],
+    "老人": ["老人", "老年", "爸妈", "父母"],
+    "儿童": ["儿童", "小孩", "孩子"],
+}
+
 
 def _contains_any(text: str, words: list[str]) -> bool:
     return any(word in text for word in words)
@@ -60,11 +83,18 @@ def _dedupe(values: list[str]) -> list[str]:
 def extract_constraints(messages: list[str], user: UserProfile | None = None) -> Constraints:
     text = "\n".join(messages)
     constraints = Constraints(raw_messages=messages)
+    inferred_profile = infer_profile_from_text(text)
+    constraints.inferred_profile = inferred_profile
 
     if user:
         constraints.taste = user.taste_preference or None
         constraints.health_goals.extend(user.health_goals)
         constraints.allergens.extend(user.allergens)
+
+    if inferred_profile.get("taste_preference"):
+        constraints.taste = inferred_profile["taste_preference"]
+    constraints.health_goals.extend(inferred_profile.get("health_goals", []))
+    constraints.allergens.extend(inferred_profile.get("allergens", []))
 
     for meal, keywords in MEAL_KEYWORDS.items():
         if _contains_any(text, keywords):
@@ -120,6 +150,66 @@ def extract_constraints(messages: list[str], user: UserProfile | None = None) ->
     constraints.preferred_ingredients = _dedupe(constraints.preferred_ingredients)
     constraints.avoid_ingredients = _dedupe(constraints.avoid_ingredients)
     return constraints
+
+
+def infer_profile_from_text(text: str) -> dict:
+    profile: dict = {
+        "source": "dialog",
+        "gender": None,
+        "age": None,
+        "labor_intensity": None,
+        "special_groups": [],
+        "pregnancy_week": None,
+        "taste_preference": None,
+        "allergens": [],
+        "health_goals": [],
+    }
+
+    if any(word in text for word in ["我是男", "男生", "男性", "我老公", "我爸"]):
+        profile["gender"] = "男"
+    if any(word in text for word in ["我是女", "女生", "女性", "我老婆", "我妈", "女朋友"]):
+        profile["gender"] = "女"
+
+    age_match = re.search(r"(\d{1,3})\s*岁", text)
+    if age_match:
+        profile["age"] = int(age_match.group(1))
+
+    week_match = re.search(r"孕(?:周|期)?\s*(\d{1,2})\s*周|怀孕\s*(\d{1,2})\s*周", text)
+    if week_match:
+        week = week_match.group(1) or week_match.group(2)
+        profile["pregnancy_week"] = f"{week}周"
+        profile["special_groups"].append("孕妇")
+
+    if any(word in text for word in ["体力活", "运动量大", "劳动强度高", "经常运动"]):
+        profile["labor_intensity"] = "高"
+    elif any(word in text for word in ["久坐", "办公室", "不怎么运动", "劳动强度低"]):
+        profile["labor_intensity"] = "低"
+
+    for group, keywords in SPECIAL_GROUP_KEYWORDS.items():
+        if _contains_any(text, keywords):
+            profile["special_groups"].append(group)
+
+    for taste, keywords in TASTE_KEYWORDS.items():
+        if _contains_any(text, keywords):
+            profile["taste_preference"] = taste
+
+    for goal, keywords in HEALTH_KEYWORDS.items():
+        if _contains_any(text, keywords):
+            profile["health_goals"].append(goal)
+
+    for allergen in ALLERGEN_PATTERNS:
+        if (
+            f"对{allergen}过敏" in text
+            or f"{allergen}过敏" in text
+            or f"不能吃{allergen}" in text
+            or f"不吃{allergen}" in text
+        ):
+            profile["allergens"].append(allergen)
+
+    profile["special_groups"] = _dedupe(profile["special_groups"])
+    profile["allergens"] = _dedupe(profile["allergens"])
+    profile["health_goals"] = _dedupe(profile["health_goals"])
+    return profile
 
 
 def _parse_chinese_number(value: str) -> int | None:

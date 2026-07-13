@@ -25,7 +25,11 @@ def check_recipe(recipe: Recipe, constraints: Constraints, user: UserProfile | N
     if "辣" in constraints.avoid_tastes and ("辣" in text or "重口味" in text):
         hard_failures.append("用户要求不辣，但菜谱标签或食材包含辣味")
 
-    special_groups = user.special_groups if user else []
+    special_groups = []
+    if user:
+        special_groups.extend(user.special_groups)
+    special_groups.extend(constraints.inferred_profile.get("special_groups", []))
+    special_groups = _dedupe(special_groups)
     if "高尿酸" in special_groups and _contains_any(text, HIGH_PURINE):
         warnings.append("用户高尿酸，建议谨慎选择高嘌呤相关食材")
     if "高血糖" in special_groups and _contains_any(text, HIGH_SUGAR):
@@ -44,3 +48,11 @@ def check_recipe(recipe: Recipe, constraints: Constraints, user: UserProfile | N
 
 def _contains_any(text: str, words: list[str]) -> bool:
     return any(word in text for word in words)
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+    return result
