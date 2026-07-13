@@ -29,6 +29,7 @@ class UserProfile:
 class Constraints:
     meal: str | None = None
     people_count: int | None = None
+    requested_dish_count: int | None = None
     taste: str | None = None
     avoid_tastes: list[str] = field(default_factory=list)
     health_goals: list[str] = field(default_factory=list)
@@ -45,6 +46,7 @@ class Constraints:
         return {
             "meal": self.meal,
             "people_count": self.people_count,
+            "requested_dish_count": self.requested_dish_count,
             "taste": self.taste,
             "avoid_tastes": self.avoid_tastes,
             "health_goals": self.health_goals,

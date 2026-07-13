@@ -6,7 +6,7 @@ from .retriever import rank_recipes
 
 def plan_meal(recipes: list[Recipe], constraints: Constraints, user: UserProfile | None) -> dict:
     ranked = rank_recipes(recipes, constraints, user)
-    menu_size = _menu_size(constraints.people_count)
+    menu_size = _menu_size(constraints)
     selected = _diverse_select(ranked, menu_size)
     warnings = _collect_warnings(selected)
 
@@ -39,7 +39,10 @@ def plan_meal(recipes: list[Recipe], constraints: Constraints, user: UserProfile
     }
 
 
-def _menu_size(people_count: int | None) -> int:
+def _menu_size(constraints: Constraints) -> int:
+    if constraints.requested_dish_count:
+        return max(1, min(constraints.requested_dish_count, 8))
+    people_count = constraints.people_count
     if people_count is None or people_count <= 1:
         return 2
     if people_count <= 2:

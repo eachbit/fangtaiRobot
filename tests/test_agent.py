@@ -63,6 +63,18 @@ def main():
     assert "海蛎子" in disliked_oyster["constraints"]["avoid_ingredients"]
     assert "海蛎子" not in disliked_oyster["constraints"]["allergens"]
 
+    four_dishes = recommend(
+        None,
+        [
+            "我是一名健身需求的大学生，我有高血压的病症，我喜欢肉类",
+            "我要摄入高蛋白",
+            "我不喜欢吃海蛎子",
+            "帮我推荐4道菜",
+        ],
+    )
+    assert four_dishes["constraints"]["requested_dish_count"] == 4
+    assert len(four_dishes["menu"]) == 4
+
     print(f"ok: {len(recipes)} recipes, {len(users)} users, {len(cases)} dialog cases")
 
 
