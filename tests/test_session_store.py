@@ -5,6 +5,7 @@ import unittest
 
 from app.agent import recommend, recommend_with_session
 from app.session_store import MenuVersionConflict, SessionStore
+from server import parse_user_id
 
 
 class FakeClock:
@@ -120,6 +121,20 @@ class LegacyAgentCompatibilityTests(unittest.TestCase):
 
         self.assertNotEqual(second["session_id"], first["session_id"])
         self.assertEqual(second["user_id"], 1)
+
+
+class RequestValidationTests(unittest.TestCase):
+    def test_user_id_accepts_empty_integer_and_numeric_string(self) -> None:
+        self.assertIsNone(parse_user_id(None))
+        self.assertIsNone(parse_user_id(""))
+        self.assertEqual(parse_user_id(3), 3)
+        self.assertEqual(parse_user_id("3"), 3)
+
+    def test_user_id_rejects_boolean_object_and_non_numeric_string(self) -> None:
+        for value in (True, {}, "abc", -1, 0):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    parse_user_id(value)
 
 
 if __name__ == "__main__":

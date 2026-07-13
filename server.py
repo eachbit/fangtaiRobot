@@ -14,6 +14,20 @@ ROOT = Path(__file__).resolve().parent
 PUBLIC = ROOT / "public"
 
 
+def parse_user_id(value) -> int | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError("user_id must be a positive integer")
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError("user_id must be a positive integer") from exc
+    if parsed < 1:
+        raise ValueError("user_id must be a positive integer")
+    return parsed
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -56,7 +70,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "menu_version must be a positive integer"}, status=400)
                 return
             result = recommend_with_session(
-                int(user_id) if user_id not in (None, "") else None,
+                parse_user_id(user_id),
                 messages,
                 session_id=session_id,
                 menu_version=menu_version,
@@ -72,6 +86,8 @@ class Handler(BaseHTTPRequestHandler):
                 },
                 status=409,
             )
+        except ValueError as exc:
+            self._json({"error": str(exc)}, status=400)
         except Exception as exc:
             self._json({"error": "internal_error", "detail": str(exc)}, status=500)
 
