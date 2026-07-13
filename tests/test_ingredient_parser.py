@@ -77,6 +77,22 @@ class ParseIngredientSegmentTests(unittest.TestCase):
         self.assertEqual(parsed.amount_source, "default")
         self.assertIsNone(parsed.grams)
 
+    def test_natural_units_clean_names_without_inventing_grams(self) -> None:
+        cases = {
+            "小葱1根": ("葱", 1, "根"),
+            "香叶2片": ("香叶", 2, "片"),
+            "蒜3瓣": ("蒜", 3, "瓣"),
+            "红枣4颗": ("红枣", 4, "颗"),
+        }
+
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                parsed = parse_ingredient_segment(text)
+                self.assertEqual((parsed.canonical_name, parsed.amount, parsed.unit), expected)
+                self.assertIsNone(parsed.grams)
+                self.assertEqual(parsed.amount_source, "unknown")
+                self.assertGreater(parsed.confidence, 0)
+
     def test_converts_spoons_bowls_and_fractions(self) -> None:
         cases = {
             "盐半勺": (0.5, "勺", 5),

@@ -24,7 +24,7 @@ class ParsedIngredient:
 _GROUP_PREFIX = re.compile(r"^(?:(?:主料|辅料|调料|A料|B料)\s*[:：]\s*)+")
 _NUMBER = r"(?:\d+(?:\.\d+)?|\d+/\d+|半)"
 _UNITS = (
-    r"kg|g|ml|千克|公斤|克|毫升|大勺|汤匙|小勺|茶匙|勺|碗|个|瓣"
+    r"kg|g|ml|千克|公斤|克|毫升|大勺|汤匙|小勺|茶匙|勺|碗|个|瓣|根|片|颗|粒|只|条|块|朵|包|袋|盒"
 )
 _QUANTITY = re.compile(rf"(?P<number>{_NUMBER})\s*(?P<unit>{_UNITS})", re.IGNORECASE)
 _FUZZY = re.compile(r"适量|少许|少量")
@@ -57,6 +57,7 @@ _ALIASES = {
     "葱丝": "葱",
     "葱段": "葱",
     "葱末": "葱",
+    "小葱": "葱",
     "蒜花": "蒜",
     "蒜段": "蒜",
     "大蒜": "蒜",
@@ -152,7 +153,7 @@ def parse_ingredient_segment(text: str) -> ParsedIngredient:
             else:
                 amount_source = "unknown"
                 confidence = 0.2
-        elif amount is not None and unit == "瓣":
+        elif amount is not None:
             amount_source = "unknown"
             confidence = 0.2
         working_segment = (
