@@ -12,6 +12,18 @@ class Recipe:
 
 
 @dataclass(frozen=True)
+class HealthMetrics:
+    fasting_glucose_mmol_l: float
+    systolic_blood_pressure_mm_hg: int
+    diastolic_blood_pressure_mm_hg: int
+    total_cholesterol_mmol_l: float
+    triglycerides_mmol_l: float
+    ldl_mmol_l: float
+    hdl_mmol_l: float
+    uric_acid_umol_l: int
+
+
+@dataclass(frozen=True)
 class UserProfile:
     id: int
     gender: str
@@ -22,6 +34,10 @@ class UserProfile:
     taste_preference: str
     allergens: list[str]
     health_goals: list[str]
+    height_cm: float
+    weight_kg: float
+    bmi: float
+    checkup_metrics: HealthMetrics | None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
