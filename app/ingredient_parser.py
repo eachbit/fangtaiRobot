@@ -24,7 +24,7 @@ class ParsedIngredient:
 _GROUP_PREFIX = re.compile(r"^(?:(?:主料|辅料|调料|A料|B料)\s*[:：]\s*)+")
 _NUMBER = r"(?:\d+(?:\.\d+)?|\d+/\d+|半)"
 _UNITS = (
-    r"kg|g|ml|千克|公斤|克|毫升|大勺|汤匙|小勺|茶匙|勺|碗|个"
+    r"kg|g|ml|千克|公斤|克|毫升|大勺|汤匙|小勺|茶匙|勺|碗|个|瓣"
 )
 _QUANTITY = re.compile(rf"(?P<number>{_NUMBER})\s*(?P<unit>{_UNITS})", re.IGNORECASE)
 _FUZZY = re.compile(r"适量|少许|少量")
@@ -59,6 +59,8 @@ _ALIASES = {
     "葱末": "葱",
     "蒜花": "蒜",
     "蒜段": "蒜",
+    "大蒜": "蒜",
+    "蒜瓣": "蒜",
     "蒜片": "蒜",
     "蒜丝": "蒜",
     "蒜末": "蒜",
@@ -133,11 +135,14 @@ def parse_ingredient_segment(text: str) -> ParsedIngredient:
             notes = _append_note(notes, "通用容量近似")
         elif unit == "个":
             confidence = 0.7
-            if re.search(r"(?:鸡蛋|鸭蛋|鹅蛋|鹌鹑蛋)", segment):
+            if "蛋" in segment:
                 grams = amount * 50
                 notes = _append_note(notes, "按每个蛋50g近似换算")
             else:
                 amount_source = "unknown"
+        elif unit == "瓣":
+            amount_source = "unknown"
+            confidence = 0.0
         segment = segment[: quantity_match.start()] + segment[quantity_match.end() :]
     elif fuzzy_match:
         segment = segment[: fuzzy_match.start()] + segment[fuzzy_match.end() :]

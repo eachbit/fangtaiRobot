@@ -50,6 +50,31 @@ class ParseIngredientSegmentTests(unittest.TestCase):
         self.assertIsNone(tomato.grams)
         self.assertEqual(tomato.amount_source, "unknown")
 
+    def test_converts_generic_egg_count(self) -> None:
+        parsed = parse_ingredient_segment("蛋2个")
+
+        self.assertEqual(parsed.canonical_name, "蛋")
+        self.assertEqual(parsed.amount, 2)
+        self.assertEqual(parsed.unit, "个")
+        self.assertEqual(parsed.grams, 100)
+        self.assertEqual(parsed.amount_source, "explicit")
+
+    def test_normalizes_garlic_cloves_without_estimating_weight(self) -> None:
+        parsed = parse_ingredient_segment("大蒜2瓣")
+
+        self.assertEqual(parsed.canonical_name, "蒜")
+        self.assertEqual(parsed.amount, 2)
+        self.assertEqual(parsed.unit, "瓣")
+        self.assertIsNone(parsed.grams)
+        self.assertEqual(parsed.amount_source, "unknown")
+
+    def test_normalizes_garlic_fuzzy_amount(self) -> None:
+        parsed = parse_ingredient_segment("大蒜少许")
+
+        self.assertEqual(parsed.canonical_name, "蒜")
+        self.assertEqual(parsed.amount_source, "default")
+        self.assertIsNone(parsed.grams)
+
     def test_converts_spoons_bowls_and_fractions(self) -> None:
         cases = {
             "盐半勺": (0.5, "勺", 5),
