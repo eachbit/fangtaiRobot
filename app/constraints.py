@@ -110,9 +110,11 @@ def extract_constraints(messages: list[str], user: UserProfile | None = None) ->
     elif "一家四口" in text:
         constraints.people_count = 4
 
-    dish_count_match = re.search(r"(?:推荐|安排|来|做|给我)?\s*([一二两三四五六七八九十\d]+)\s*道(?:菜|餐|饭)?", text)
-    if dish_count_match:
-        constraints.requested_dish_count = _parse_chinese_number(dish_count_match.group(1))
+    dish_count_matches = list(
+        re.finditer(r"(?<!第)(?:推荐|安排|来|做|给我|改成)?\s*([一二两三四五六七八九十\d]+)\s*道(?:菜|餐|饭)?", text)
+    )
+    if dish_count_matches:
+        constraints.requested_dish_count = _parse_chinese_number(dish_count_matches[-1].group(1))
 
     constraints.avoid_tastes.extend(_extract_avoid_tastes(text))
 

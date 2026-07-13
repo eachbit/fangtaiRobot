@@ -7,8 +7,16 @@ from .recipe_features import classify_recipe
 from .retriever import rank_recipes
 
 
-def plan_meal(recipes: list[Recipe], constraints: Constraints, user: UserProfile | None) -> dict:
+def plan_meal(
+    recipes: list[Recipe],
+    constraints: Constraints,
+    user: UserProfile | None,
+    *,
+    excluded_recipe_ids: set[int] | None = None,
+) -> dict:
     ranked = rank_recipes(recipes, constraints, user)
+    if excluded_recipe_ids:
+        ranked = [item for item in ranked if item["recipe"].id not in excluded_recipe_ids]
     ranked = _rank_with_nutrition(ranked, constraints, user)
     menu_size = _menu_size(constraints)
     selected = _diverse_select(ranked, menu_size)
@@ -35,11 +43,28 @@ def plan_meal(recipes: list[Recipe], constraints: Constraints, user: UserProfile
             }
         )
 
-    score_card = build_score_card(menu, constraints, selected)
-    table_nutrition = score_table_nutrition(
-        [item["nutrition"] for item in menu], constraints, user
-    )
-    return {
+    result = finalize_menu(menu, constraints, user, selected=selected, warnings=warnings)
+    result["answer"] = build_answer(menu, constraints, warnings)
+    return result
+
+
+def finalize_menu(
+    menu: list[dict],
+    constraints: Constraints,
+    user: UserProfile | None,
+    *,
+    selected: list[dict] | None = None,
+    warnings: list[str] | None = None,
+    changes: dict | None = None,
+    minimal_change: bool = True,
+) -> dict:
+    warnings = list(warnings or [])
+    selected = selected or [
+        {"reasons": [item.get("reason", "")], "warnings": []} for item in menu
+    ]
+    score_card = build_score_card(menu, constraints, selected, minimal_change=minimal_change)
+    table_nutrition = score_table_nutrition([item["nutrition"] for item in menu], constraints, user)
+    result = {
         "menu": menu,
         "score_card": score_card,
         "nutrition": table_nutrition,
@@ -53,6 +78,9 @@ def plan_meal(recipes: list[Recipe], constraints: Constraints, user: UserProfile
         "warnings": warnings,
         "answer": build_answer(menu, constraints, warnings),
     }
+    if changes is not None:
+        result["changes"] = changes
+    return result
 
 
 def _rank_with_nutrition(
@@ -170,7 +198,13 @@ def _collect_warnings(selected: list[dict]) -> list[str]:
     return warnings
 
 
-def build_score_card(menu: list[dict], constraints: Constraints, selected: list[dict]) -> dict:
+def build_score_card(
+    menu: list[dict],
+    constraints: Constraints,
+    selected: list[dict],
+    *,
+    minimal_change: bool = True,
+) -> dict:
     total = len(menu)
     health_hits = sum(1 for item in selected if any("健康需求" in reason for reason in item["reasons"]))
     taste_hits = sum(1 for item in selected if any("口味" in reason or "清淡" in reason for reason in item["reasons"]))
@@ -185,7 +219,7 @@ def build_score_card(menu: list[dict], constraints: Constraints, selected: list[
         "health_match": _level(health_hits, total) if constraints.health_goals else "not_required",
         "taste_match": _level(taste_hits, total) if constraints.taste else "not_required",
         "scenario_match": _level(scenario_hits, total),
-        "minimal_change": True,
+        "minimal_change": minimal_change,
         "menu_count": total,
     }
 
