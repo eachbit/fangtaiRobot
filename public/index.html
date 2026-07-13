@@ -36,7 +36,11 @@
           <textarea id="messages" rows="8" placeholder="每一行作为一轮对话，例如：&#10;给我想一顿两个人的晚饭。&#10;一个人想吃辣，一个人一点辣都不想碰。"></textarea>
         </label>
 
-        <button id="recommendBtn">生成推荐</button>
+        <div class="button-row">
+          <button id="recommendBtn">生成推荐</button>
+          <button id="newSessionBtn" class="secondary-button" type="button">新会话</button>
+        </div>
+        <div id="sessionState" class="session-state">尚未创建会话</div>
       </section>
 
       <section class="panel">
@@ -55,6 +59,20 @@
         <div id="scoreCard" class="score-grid"></div>
         <h3>风险提示</h3>
         <ul id="warnings"></ul>
+      </section>
+
+      <section class="panel nutrition-panel">
+        <div class="section-heading">
+          <h2>整桌营养</h2>
+          <span id="confidenceBadge" class="confidence-badge">暂无数据</span>
+        </div>
+        <div id="nutritionSummary" class="nutrition-summary"></div>
+        <div id="nutritionComponents" class="nutrient-grid"></div>
+      </section>
+
+      <section class="panel changes-panel">
+        <h2>本轮修改</h2>
+        <div id="changes" class="changes-empty">首次推荐后显示修改记录</div>
       </section>
     </main>
 

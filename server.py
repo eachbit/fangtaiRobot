@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -140,8 +141,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    server = ThreadingHTTPServer(("127.0.0.1", 8000), Handler)
-    print("fangtaiRobot running at http://127.0.0.1:8000")
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "8000"))
+    server = ThreadingHTTPServer((host, port), Handler)
+    print(f"fangtaiRobot running at http://{host}:{port}")
     server.serve_forever()
 
 
