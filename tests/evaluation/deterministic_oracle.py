@@ -347,6 +347,10 @@ def evaluate_result(
     if type(nutrition_check) is str:
         return _schema_result(scenario, normalized_elapsed, nutrition_check)
 
+    for field in ("changes", "score_card"):
+        if field in response_map and type(response_map[field]) is not dict:
+            return _schema_result(scenario, normalized_elapsed, f"$.{field}")
+
     violations: list[Violation] = []
     selected_recipes: list[Recipe] = []
 
@@ -546,9 +550,9 @@ def evaluate_result(
         changes = response_map.get("changes")
         score_card = response_map.get("score_card")
         minimal_change_satisfied = (
-            isinstance(changes, Mapping)
+            type(changes) is dict
             and changes.get("mode") == "minimal_revision"
-            and isinstance(score_card, Mapping)
+            and type(score_card) is dict
             and score_card.get("minimal_change") is True
         )
         if not minimal_change_satisfied:

@@ -605,6 +605,40 @@ class DeterministicOracleTests(unittest.TestCase):
             codes(evaluate_result(case, valid, official)),
         )
 
+    def test_revision_metadata_requires_plain_dicts_without_mapping_access(self) -> None:
+        official = balanced_recipes()
+        case = scenario(
+            "minimal-change-schema",
+            expectation=MenuExpectation(preserve_unaffected=True),
+        )
+        cases = (
+            (
+                {
+                    "changes": EvilMapping(),
+                    "score_card": {"minimal_change": True},
+                },
+                "$.changes",
+            ),
+            (
+                {
+                    "changes": {"mode": "minimal_revision"},
+                    "score_card": EvilMapping(),
+                },
+                "$.score_card",
+            ),
+        )
+
+        for metadata, path in cases:
+            with self.subTest(path=path):
+                response = response_for([official[1]])
+                response.update(metadata)
+
+                result = evaluate_result(case, response, official)
+
+                self.assertEqual(codes(result), ["response.schema"])
+                self.assertEqual(result.violations[0].severity, "blocking")
+                self.assertEqual(result.violations[0].evidence, {"path": path})
+
     def test_elapsed_timeout_threshold_is_strictly_greater_than_15000_ms(self) -> None:
         official = balanced_recipes()
         response = response_for([official[1]])
