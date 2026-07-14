@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from copy import deepcopy
 import json
 from pathlib import Path
 import tempfile
 import unittest
 
+from app.agent import get_recipes, get_users, recommend
+from app.food_terms import expand_terms
 from app.models import Recipe
 from tests.evaluation.deterministic_oracle import evaluate_result
+from tests.evaluation.persona_factory import persona_from_user
 from tests.evaluation.schemas import HealthPersona, MenuExpectation, Scenario
 
 
@@ -56,13 +60,29 @@ def response_for(recipes: list[Recipe]) -> dict[str, object]:
         ],
         "constraints": {
             "inferred_profile": {"special_groups": [], "allergens": []},
+            "allergens": [],
             "health_goals": [],
         },
+        "user": None,
     }
 
 
 def codes(result: object) -> list[str]:
     return [violation.code for violation in result.violations]  # type: ignore[attr-defined]
+
+
+class EvilMapping(Mapping[str, object]):
+    def __getitem__(self, key: str) -> object:
+        raise RuntimeError("mapping access must not occur")
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(())
+
+    def __len__(self) -> int:
+        return 0
+
+    def get(self, key: str, default: object = None) -> object:
+        raise RuntimeError("mapping get must not occur")
 
 
 class DeterministicOracleTests(unittest.TestCase):
@@ -112,6 +132,59 @@ class DeterministicOracleTests(unittest.TestCase):
                 result = evaluate_result(scenario(), response, official)
                 self.assertEqual(codes(result), ["response.schema"])
                 self.assertFalse(result.passed)
+
+    def test_external_objects_require_plain_dicts_without_mapping_access(self) -> None:
+        official = balanced_recipes()
+        valid = response_for([official[1]])
+        with_nutrition = deepcopy(valid)
+        with_nutrition["menu"][0]["nutrition"] = {  # type: ignore[index]
+            "nutrients": {"energy_kcal": 100.0}
+        }
+        with_nutrition["nutrition"] = {
+            "table_total": {"energy_kcal": 100.0}
+        }
+
+        bad_menu_item = deepcopy(valid)
+        bad_menu_item["menu"][0] = EvilMapping()  # type: ignore[index]
+        bad_constraints = {**deepcopy(valid), "constraints": EvilMapping()}
+        bad_inferred = deepcopy(valid)
+        bad_inferred["constraints"]["inferred_profile"] = EvilMapping()  # type: ignore[index]
+        bad_user = {**deepcopy(valid), "user": EvilMapping()}
+        bad_nutrition = {**deepcopy(with_nutrition), "nutrition": EvilMapping()}
+        bad_item_nutrition = deepcopy(with_nutrition)
+        bad_item_nutrition["menu"][0]["nutrition"] = EvilMapping()  # type: ignore[index]
+        bad_nutrients = deepcopy(with_nutrition)
+        bad_nutrients["menu"][0]["nutrition"]["nutrients"] = EvilMapping()  # type: ignore[index]
+        bad_table_total = deepcopy(with_nutrition)
+        bad_table_total["nutrition"]["table_total"] = EvilMapping()  # type: ignore[index]
+        cases = (
+            (EvilMapping(), "$"),
+            (bad_menu_item, "$.menu[0]"),
+            (bad_constraints, "$.constraints"),
+            (bad_inferred, "$.constraints.inferred_profile"),
+            (bad_user, "$.user"),
+            (bad_nutrition, "$.nutrition"),
+            (bad_item_nutrition, "$.menu[0].nutrition"),
+            (bad_nutrients, "$.menu[0].nutrition.nutrients"),
+            (bad_table_total, "$.nutrition.table_total"),
+        )
+
+        for response, path in cases:
+            with self.subTest(path=path):
+                result = evaluate_result(scenario(), response, official)
+                self.assertEqual(codes(result), ["response.schema"])
+                self.assertEqual(result.violations[0].evidence, {"path": path})
+
+    def test_menu_id_outside_signed_int64_is_json_safe_schema_violation(self) -> None:
+        official = balanced_recipes()
+        response = response_for([official[1]])
+        response["menu"][0]["id"] = 2**100  # type: ignore[index]
+
+        result = evaluate_result(scenario(), response, official)
+
+        self.assertEqual(codes(result), ["response.schema"])
+        self.assertEqual(result.violations[0].evidence, {"path": "$.menu[0].id"})
+        json.dumps(result.to_dict(), allow_nan=False)
 
     def test_fake_recipe_id_is_rejected(self) -> None:
         response = response_for([recipe(999, "伪造菜", "伪造食材", "伪造步骤")])
@@ -221,6 +294,50 @@ class DeterministicOracleTests(unittest.TestCase):
         self.assertIn("health.special_groups_false_positive", codes(result))
         self.assertNotIn("health.special_groups_false_negative", codes(result))
 
+    def test_official_user_health_fields_match_real_recommendation(self) -> None:
+        user = next(item for item in get_users() if item.id == 3)
+        messages = ("我对花生过敏，晚餐推荐3道菜",)
+        case = Scenario(
+            "official-user-3-health",
+            persona_from_user(user),
+            messages,
+            MenuExpectation(dish_count=3),
+            1,
+        )
+        response = recommend(user.id, list(messages))
+        official = {item.id: item for item in get_recipes()}
+
+        result = evaluate_result(case, response, official)
+
+        self.assertTrue(result.passed)
+        self.assertFalse(
+            any(
+                item.severity == "blocking" and item.code.startswith("health.")
+                for item in result.violations
+            )
+        )
+
+    def test_allergen_alias_expansion_is_equivalent_to_persona_term(self) -> None:
+        official = balanced_recipes()
+        response = response_for([official[1]])
+        expanded = expand_terms(["海鲜"])
+        response["constraints"]["allergens"] = expanded  # type: ignore[index]
+        response["constraints"]["inferred_profile"]["allergens"] = expanded  # type: ignore[index]
+        persona = HealthPersona(
+            "seafood-alias",
+            "healthy",
+            allergens=("海鲜",),
+        )
+
+        result = evaluate_result(
+            scenario("seafood-alias", persona=persona),
+            response,
+            official,
+        )
+
+        self.assertNotIn("health.allergens_false_positive", codes(result))
+        self.assertNotIn("health.allergens_false_negative", codes(result))
+
     def test_all_health_false_positive_and_false_negative_codes_are_stable(self) -> None:
         official = balanced_recipes()
         response = response_for([official[1]])
@@ -229,6 +346,7 @@ class DeterministicOracleTests(unittest.TestCase):
                 "special_groups": ["孕妇"],
                 "allergens": ["牛奶"],
             },
+            "allergens": ["牛奶"],
             "health_goals": ["减脂"],
         }
         persona = HealthPersona(
@@ -314,6 +432,51 @@ class DeterministicOracleTests(unittest.TestCase):
 
         self.assertNotIn("nutrition.table_total_mismatch", codes(result))
         self.assertNotIn("response.schema", codes(result))
+
+    def test_nutrition_rejects_inexact_or_out_of_range_integers(self) -> None:
+        official = balanced_recipes()
+        cases = (
+            (2**53 + 1, 2**53, "$.menu[0].nutrition.nutrients.energy_kcal"),
+            (2**53, 2**53 + 1, "$.nutrition.table_total.energy_kcal"),
+            (2**63, 2**63, "$.nutrition.table_total.energy_kcal"),
+        )
+
+        for item_value, total_value, path in cases:
+            with self.subTest(path=path, value=max(item_value, total_value)):
+                response = response_for([official[1]])
+                response["menu"][0]["nutrition"] = {  # type: ignore[index]
+                    "nutrients": {"energy_kcal": item_value}
+                }
+                response["nutrition"] = {
+                    "table_total": {"energy_kcal": total_value}
+                }
+
+                result = evaluate_result(scenario(), response, official)
+
+                self.assertEqual(codes(result), ["response.schema"])
+                self.assertEqual(result.violations[0].evidence, {"path": path})
+
+    def test_nutrition_values_must_be_non_negative(self) -> None:
+        official = balanced_recipes()
+        cases = (
+            (-1.0, 0.0, "$.menu[0].nutrition.nutrients.energy_kcal"),
+            (1.0, -1.0, "$.nutrition.table_total.energy_kcal"),
+        )
+
+        for item_value, total_value, path in cases:
+            with self.subTest(path=path):
+                response = response_for([official[1]])
+                response["menu"][0]["nutrition"] = {  # type: ignore[index]
+                    "nutrients": {"energy_kcal": item_value}
+                }
+                response["nutrition"] = {
+                    "table_total": {"energy_kcal": total_value}
+                }
+
+                result = evaluate_result(scenario(), response, official)
+
+                self.assertEqual(codes(result), ["response.schema"])
+                self.assertEqual(result.violations[0].evidence, {"path": path})
 
     def test_nutrition_sum_mismatch_has_stable_violation_code(self) -> None:
         official = balanced_recipes()
@@ -570,6 +733,7 @@ class DeterministicOracleTests(unittest.TestCase):
                 "special_groups": ["高血压"],
                 "allergens": ["花生"],
             },
+            "allergens": ["花生"],
             "health_goals": ["控糖"],
         }
         health_false_negative = response_for([base_item])

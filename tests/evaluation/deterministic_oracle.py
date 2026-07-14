@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from app.food_terms import contains_food_term
+from app.food_terms import contains_food_term, expand_terms
 from app.models import Recipe
 from app.recipe_features import analyze_recipe
 from tests.evaluation.schemas import Scenario, ScenarioResult, Violation
@@ -18,6 +18,8 @@ DEFAULT_KNOWN_GAPS_PATH = (
 _KNOWN_GAP_FIELDS = frozenset(
     {"scenario_id", "violation_code", "owner_phase", "expires_after_phase"}
 )
+_SIGNED_INT_MIN = -(2**63)
+_SIGNED_INT_MAX = 2**63 - 1
 _NON_DOWNGRADABLE_CODES = frozenset(
     {
         "response.schema",
@@ -70,18 +72,22 @@ def _schema_result(scenario: Scenario, elapsed_ms: float, path: str) -> Scenario
     )
 
 
-def _validated_menu(response: object) -> tuple[Mapping[str, Any], list[Mapping[str, Any]]] | str:
-    if not isinstance(response, Mapping):
+def _validated_menu(response: object) -> tuple[dict[str, Any], list[dict[str, Any]]] | str:
+    if type(response) is not dict:
         return "$"
     menu = response.get("menu")
     if type(menu) is not list:
         return "$.menu"
-    validated: list[Mapping[str, Any]] = []
+    validated: list[dict[str, Any]] = []
     for index, item in enumerate(menu):
         path = f"$.menu[{index}]"
-        if not isinstance(item, Mapping):
+        if type(item) is not dict:
             return path
-        if type(item.get("id")) is not int:
+        recipe_id = item.get("id")
+        if (
+            type(recipe_id) is not int
+            or not _SIGNED_INT_MIN <= recipe_id <= _SIGNED_INT_MAX
+        ):
             return f"{path}.id"
         if type(item.get("name")) is not str:
             return f"{path}.name"
@@ -101,13 +107,13 @@ def _string_list(value: object, path: str) -> list[str] | str:
 
 
 def _validated_health_fields(
-    response: Mapping[str, Any],
+    response: dict[str, Any],
 ) -> tuple[list[str], list[str], list[str]] | str:
     constraints = response.get("constraints")
-    if not isinstance(constraints, Mapping):
+    if type(constraints) is not dict:
         return "$.constraints"
     inferred_profile = constraints.get("inferred_profile")
-    if not isinstance(inferred_profile, Mapping):
+    if type(inferred_profile) is not dict:
         return "$.constraints.inferred_profile"
 
     special_groups = _string_list(
@@ -116,9 +122,15 @@ def _validated_health_fields(
     )
     if type(special_groups) is str:
         return special_groups
-    allergens = _string_list(
+    inferred_allergens = _string_list(
         inferred_profile.get("allergens"),
         "$.constraints.inferred_profile.allergens",
+    )
+    if type(inferred_allergens) is str:
+        return inferred_allergens
+    allergens = _string_list(
+        constraints.get("allergens"),
+        "$.constraints.allergens",
     )
     if type(allergens) is str:
         return allergens
@@ -128,7 +140,21 @@ def _validated_health_fields(
     )
     if type(health_goals) is str:
         return health_goals
-    return special_groups, allergens, health_goals
+
+    user = response.get("user")
+    official_groups: list[str] = []
+    if user is not None:
+        if type(user) is not dict:
+            return "$.user"
+        validated_groups = _string_list(user.get("特殊人群"), "$.user.特殊人群")
+        if type(validated_groups) is str:
+            return validated_groups
+        official_groups = validated_groups
+    return (
+        [*special_groups, *official_groups],
+        [*allergens, *inferred_allergens],
+        health_goals,
+    )
 
 
 def _result(
@@ -154,25 +180,36 @@ def _finite_number(value: object) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _nutrition_number(value: object) -> float | None:
+    if type(value) is int and not _SIGNED_INT_MIN <= value <= _SIGNED_INT_MAX:
+        return None
+    number = _finite_number(value)
+    if number is None or number < 0:
+        return None
+    if type(value) is int and int(number) != value:
+        return None
+    return number
+
+
 def _nutrition_check(
-    response: Mapping[str, Any],
-    menu: list[Mapping[str, Any]],
+    response: dict[str, Any],
+    menu: list[dict[str, Any]],
 ) -> Violation | str | None:
     if "nutrition" not in response and not any("nutrition" in item for item in menu):
         return None
 
     nutrition = response.get("nutrition")
-    if not isinstance(nutrition, Mapping):
+    if type(nutrition) is not dict:
         return "$.nutrition"
     table_total = nutrition.get("table_total")
-    if not isinstance(table_total, Mapping):
+    if type(table_total) is not dict:
         return "$.nutrition.table_total"
 
     total_values: dict[str, float] = {}
     for key, value in table_total.items():
         if type(key) is not str:
             return "$.nutrition.table_total"
-        number = _finite_number(value)
+        number = _nutrition_number(value)
         if number is None:
             return f"$.nutrition.table_total.{key}"
         total_values[key] = number
@@ -181,17 +218,17 @@ def _nutrition_check(
     expected_keys: set[str] | None = None
     for index, item in enumerate(menu):
         item_nutrition = item.get("nutrition")
-        if not isinstance(item_nutrition, Mapping):
+        if type(item_nutrition) is not dict:
             return f"$.menu[{index}].nutrition"
         nutrients = item_nutrition.get("nutrients")
-        if not isinstance(nutrients, Mapping):
+        if type(nutrients) is not dict:
             return f"$.menu[{index}].nutrition.nutrients"
 
         row: dict[str, float] = {}
         for key, value in nutrients.items():
             if type(key) is not str:
                 return f"$.menu[{index}].nutrition.nutrients"
-            number = _finite_number(value)
+            number = _nutrition_number(value)
             if number is None:
                 return f"$.menu[{index}].nutrition.nutrients.{key}"
             row[key] = number
@@ -463,7 +500,11 @@ def evaluate_result(
             set(extracted_groups),
             set(scenario.persona.special_groups),
         ),
-        ("allergens", set(extracted_allergens), set(scenario.persona.allergens)),
+        (
+            "allergens",
+            set(expand_terms(extracted_allergens)),
+            set(expand_terms(list(scenario.persona.allergens))),
+        ),
         ("goals", set(extracted_goals), set(scenario.persona.health_goals)),
     )
     for field, actual, expected in health_checks:
