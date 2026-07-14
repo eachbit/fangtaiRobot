@@ -427,6 +427,62 @@ class ScenarioGeneratorTests(unittest.TestCase):
 
         self.assertEqual(set(coverage["operation"]), set(DIALOGUE_OPERATIONS))
 
+    def test_coverage_rejects_out_of_range_canonical_index(self) -> None:
+        scenarios = list(generate_scenarios(seed=20260713, count=40))
+        scenario = scenarios[3]
+        scenarios[3] = replace(
+            scenario,
+            scenario_id=scenario.scenario_id.replace(
+                "index-0003",
+                "index-9999",
+                1,
+            ),
+        )
+
+        with self.assertRaisesRegex(ValueError, "metadata.*index"):
+            summarize_coverage(tuple(scenarios))
+
+    def test_coverage_rejects_duplicate_scenario_indexes(self) -> None:
+        scenarios = list(generate_scenarios(seed=20260713, count=40))
+        scenario = scenarios[1]
+        scenarios[1] = replace(
+            scenario,
+            scenario_id=scenario.scenario_id.replace(
+                "index-0001",
+                "index-0000",
+                1,
+            ),
+        )
+
+        with self.assertRaisesRegex(ValueError, "metadata.*index"):
+            summarize_coverage(tuple(scenarios))
+
+    def test_five_digit_indexes_keep_all_operation_statistics(self) -> None:
+        scenarios = generate_scenarios(seed=20260713, count=10010)
+        coverage = summarize_coverage(scenarios)
+        expected_operations = sum(
+            item.dialogue_mode == "multi_turn" for item in scenarios
+        )
+        five_digit_operation = next(
+            item
+            for item in scenarios
+            if "index-1000" in item.scenario_id
+            and "-operation-" in item.scenario_id
+        )
+
+        self.assertEqual(sum(coverage["operation"].values()), expected_operations)
+        self.assertIsNotNone(
+            scenario_generator._operation_from_scenario(five_digit_operation)
+        )
+
+    def test_coverage_accepts_reordered_scenarios_with_complete_indexes(self) -> None:
+        scenarios = generate_scenarios(seed=20260713, count=40)
+
+        coverage = summarize_coverage(tuple(reversed(scenarios)))
+
+        self.assertEqual(sum(coverage["intent"].values()), len(scenarios))
+        self.assertEqual(set(coverage["operation"]), set(DIALOGUE_OPERATIONS))
+
     def test_generated_hard_constraints_are_detected_by_existing_oracle(self) -> None:
         scenarios = generate_scenarios(seed=20260713, count=200)
         cases = []

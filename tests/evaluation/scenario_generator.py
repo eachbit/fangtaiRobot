@@ -280,16 +280,26 @@ def generate_scenarios(seed: int, count: int) -> tuple[Scenario, ...]:
     return tuple(scenarios)
 
 
-def _operation_from_canonical_id(scenario: Scenario) -> str | None:
+def _parse_scenario_id(scenario: Scenario) -> tuple[int, str | None] | None:
     operations = "|".join(re.escape(item) for item in DIALOGUE_OPERATIONS)
     pattern = (
-        rf"seed-(?P<seed>[+-]?\d+)-index-\d{{4}}-"
-        rf"{re.escape(scenario.intent)}-operation-(?P<operation>{operations})"
+        rf"seed-(?P<seed>[+-]?\d+)-index-(?P<index>\d+)-"
+        rf"{re.escape(scenario.intent)}"
+        rf"(?:-operation-(?P<operation>{operations}))?"
     )
     match = re.fullmatch(pattern, scenario.scenario_id)
     if match is None or match.group("seed") != str(scenario.seed):
         return None
-    return match.group("operation")
+    index = int(match.group("index"))
+    operation = match.group("operation")
+    if scenario.scenario_id != _scenario_id(
+        scenario.seed,
+        index,
+        scenario.intent,
+        operation,
+    ):
+        return None
+    return index, operation
 
 
 def _operation_expectation_matches(operation: str, scenario: Scenario) -> bool:
@@ -313,8 +323,10 @@ def _operation_expectation_matches(operation: str, scenario: Scenario) -> bool:
     return operation in {"retract_preference", "request_position_change"}
 
 
-def _operation_from_scenario(scenario: Scenario) -> str | None:
-    operation = _operation_from_canonical_id(scenario)
+def _validated_operation(
+    scenario: Scenario,
+    operation: str | None,
+) -> str | None:
     if operation is None or scenario.dialogue_mode != "multi_turn":
         return None
     if scenario.intent == "relative_revision":
@@ -333,15 +345,54 @@ def _operation_from_scenario(scenario: Scenario) -> str | None:
     return operation
 
 
-def validate_coverage(scenarios: Iterable[Scenario]) -> None:
-    values = tuple(scenarios)
+def _operation_from_scenario(scenario: Scenario) -> str | None:
+    metadata = _parse_scenario_id(scenario)
+    if metadata is None:
+        return None
+    _, operation = metadata
+    return _validated_operation(scenario, operation)
+
+
+def _validate_scenario_metadata(
+    values: tuple[Scenario, ...],
+) -> tuple[str | None, ...]:
+    parsed: list[tuple[int, str | None]] = []
+    for scenario in values:
+        metadata = _parse_scenario_id(scenario)
+        if metadata is None:
+            raise ValueError(
+                "scenario metadata/index invalid: "
+                f"noncanonical scenario_id={scenario.scenario_id!r}"
+            )
+        parsed.append(metadata)
+
+    indexes = [index for index, _ in parsed]
+    actual_indexes = set(indexes)
+    expected_indexes = set(range(len(values)))
+    if len(actual_indexes) != len(indexes) or actual_indexes != expected_indexes:
+        duplicates = sorted(
+            index for index, count in Counter(indexes).items() if count > 1
+        )
+        raise ValueError(
+            "scenario metadata/index invalid: "
+            f"duplicates={duplicates}; "
+            f"missing={sorted(expected_indexes - actual_indexes)}; "
+            f"unexpected={sorted(actual_indexes - expected_indexes)}"
+        )
+
+    return tuple(
+        _validated_operation(scenario, operation)
+        for scenario, (_, operation) in zip(values, parsed, strict=True)
+    )
+
+
+def _validate_coverage(values: tuple[Scenario, ...]) -> tuple[str, ...]:
+    validated_operations = _validate_scenario_metadata(values)
     present_buckets = {item.persona.primary_bucket for item in values}
     present_intents = {item.intent for item in values}
     present_dialogues = {item.dialogue_mode for item in values}
     present_operations = {
-        operation
-        for item in values
-        if (operation := _operation_from_scenario(item)) is not None
+        operation for operation in validated_operations if operation is not None
     }
     missing_buckets = sorted(PRIMARY_BUCKETS - present_buckets)
     missing_intents = sorted(set(MANDATORY_INTENTS) - present_intents)
@@ -363,6 +414,13 @@ def validate_coverage(scenarios: Iterable[Scenario]) -> None:
             f"missing dialogue={missing_dialogues}; "
             f"missing operation={missing_operations}"
         )
+    return tuple(
+        operation for operation in validated_operations if operation is not None
+    )
+
+
+def validate_coverage(scenarios: Iterable[Scenario]) -> None:
+    _validate_coverage(tuple(scenarios))
 
 
 def _sorted_counts(values: Iterable[str]) -> dict[str, int]:
@@ -371,17 +429,12 @@ def _sorted_counts(values: Iterable[str]) -> dict[str, int]:
 
 def summarize_coverage(scenarios: Iterable[Scenario]) -> dict[str, dict[str, Any]]:
     values = tuple(scenarios)
-    validate_coverage(values)
+    operations = _validate_coverage(values)
     dimensions = {
         "primary_bucket": tuple(item.persona.primary_bucket for item in values),
         "intent": tuple(item.intent for item in values),
         "dialogue": tuple(item.dialogue_mode for item in values),
     }
-    operations = tuple(
-        operation
-        for item in values
-        if (operation := _operation_from_scenario(item)) is not None
-    )
     pairs: dict[str, dict[str, int]] = {}
     for left, right in _PAIR_DIMENSIONS:
         counts = Counter(
