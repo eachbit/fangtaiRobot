@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .models import Recipe
 
 
@@ -10,12 +12,66 @@ SOUP_TERMS = ["汤", "羹", "粥"]
 DESSERT_TERMS = ["膏", "奶昔", "甜", "糖", "点心", "下午茶", "饮品"]
 COLD_TERMS = ["凉", "拌", "沙拉"]
 
+ANIMAL_INGREDIENT_TERMS = [
+    "猪",
+    "牛",
+    "羊",
+    "鸡",
+    "鸭",
+    "鹅",
+    "鱼",
+    "虾",
+    "蟹",
+    "鲍",
+    "乳鸽",
+    "鸽",
+    "排骨",
+    "蹄筋",
+    "肉",
+]
+PLANT_INGREDIENT_TERMS = [
+    "菜",
+    "蔬",
+    "生菜",
+    "芥蓝",
+    "西兰花",
+    "菠菜",
+    "茄子",
+    "土豆",
+    "番茄",
+    "豆腐",
+    "豆干",
+    "豆皮",
+    "菌",
+    "菇",
+    "口蘑",
+]
+COOKING_METHOD_TERMS = [
+    ("凉拌", ("凉拌",)),
+    ("蒸", ("蒸",)),
+    ("炒", ("炒",)),
+    ("炖", ("炖",)),
+    ("煮", ("煮",)),
+    ("炸", ("炸",)),
+    ("烤", ("烧烤", "焗", "烤")),
+    ("凉拌", ("拌", "沙拉")),
+]
+COLD_TEMPERATURE_TERMS = ["凉拌", "冷盘", "凉菜", "冷食", "冰镇", "沙拉"]
+
+
+@dataclass(frozen=True)
+class RecipeFeatures:
+    category: str
+    protein_style: str
+    temperature: str
+    cooking_method: str
+
 
 def recipe_text(recipe: Recipe) -> str:
     return f"{recipe.name} {recipe.ingredients} {' '.join(recipe.labels)}"
 
 
-def classify_recipe(recipe: Recipe) -> str:
+def _legacy_category(recipe: Recipe) -> str:
     text = recipe_text(recipe)
     if any(term in text for term in DESSERT_TERMS):
         return "dessert"
@@ -28,6 +84,54 @@ def classify_recipe(recipe: Recipe) -> str:
     if any(term in text for term in VEG_TERMS):
         return "vegetable"
     return "other"
+
+
+def _protein_style(recipe: Recipe) -> str:
+    ingredients = recipe.ingredients.replace("鸡蛋", "").replace("蛋黄", "").replace("蛋白", "")
+    if any(term in ingredients for term in ANIMAL_INGREDIENT_TERMS):
+        return "meat"
+    if any(term in ingredients for term in PLANT_INGREDIENT_TERMS):
+        return "vegetable"
+
+    name = recipe.name.replace("鸡蛋", "").replace("鱼香", "")
+    if any(term in name for term in ANIMAL_INGREDIENT_TERMS):
+        return "meat"
+    if any(term in name for term in PLANT_INGREDIENT_TERMS):
+        return "vegetable"
+    return "other"
+
+
+def _cooking_method(text: str) -> str:
+    for method, terms in COOKING_METHOD_TERMS:
+        if any(term in text for term in terms):
+            return method
+    return "unknown"
+
+
+def analyze_recipe(recipe: Recipe) -> RecipeFeatures:
+    cooking_method = _cooking_method(recipe.name)
+    if cooking_method == "unknown":
+        cooking_method = _cooking_method(recipe.steps)
+
+    if any(term in recipe.name for term in COLD_TEMPERATURE_TERMS):
+        temperature = "cold"
+    elif cooking_method == "凉拌":
+        temperature = "cold"
+    elif cooking_method in {"蒸", "炒", "炖", "煮", "炸", "烤"}:
+        temperature = "hot"
+    else:
+        temperature = "unknown"
+
+    return RecipeFeatures(
+        category=_legacy_category(recipe),
+        protein_style=_protein_style(recipe),
+        temperature=temperature,
+        cooking_method=cooking_method,
+    )
+
+
+def classify_recipe(recipe: Recipe) -> str:
+    return analyze_recipe(recipe).category
 
 
 def is_breakfast_friendly(recipe: Recipe) -> bool:
