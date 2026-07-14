@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 import unittest
 from collections import Counter
+from dataclasses import replace
 
 from tests.evaluation.dialogue_state_machine import (
     DIALOGUE_OPERATIONS,
@@ -234,6 +235,38 @@ class ScenarioGeneratorTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "missing primary_bucket.*missing intent"):
             summarize_coverage(scenarios[:1])
+
+    def test_coverage_validation_rejects_missing_multi_turn_dialogue(self) -> None:
+        scenarios = generate_scenarios(seed=20260713, count=200)
+        single_turn_only = tuple(
+            replace(item, dialogue_mode="single_turn") for item in scenarios
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"missing dialogue=\['multi_turn'\]",
+        ):
+            summarize_coverage(single_turn_only)
+
+    def test_large_coverage_validation_lists_all_missing_operations(self) -> None:
+        scenarios = generate_scenarios(seed=20260713, count=200)
+        without_operations = tuple(
+            replace(item, scenario_id=item.scenario_id.split("-operation-", 1)[0])
+            for item in scenarios
+        )
+
+        with self.assertRaisesRegex(ValueError, "missing operation") as raised:
+            summarize_coverage(without_operations)
+        for operation in DIALOGUE_OPERATIONS:
+            self.assertIn(operation, str(raised.exception))
+
+    def test_ten_scenarios_validate_without_full_operation_coverage(self) -> None:
+        coverage = summarize_coverage(generate_scenarios(seed=20260713, count=10))
+
+        self.assertEqual(len(coverage["primary_bucket"]), 5)
+        self.assertEqual(set(coverage["intent"]), set(MANDATORY_INTENTS))
+        self.assertEqual(set(coverage["dialogue"]), {"single_turn", "multi_turn"})
+        self.assertLess(len(coverage["operation"]), len(DIALOGUE_OPERATIONS))
 
     def test_generator_does_not_read_or_mutate_global_random_state(self) -> None:
         random.seed(123456)

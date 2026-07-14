@@ -7,6 +7,7 @@ import random
 from typing import Any
 
 from tests.evaluation.dialogue_state_machine import (
+    DIALOGUE_OPERATIONS,
     build_dialogue_plan,
     persona_disclosure,
 )
@@ -16,7 +17,12 @@ from tests.evaluation.persona_factory import (
     CONDITION_GROUPS,
     build_personas,
 )
-from tests.evaluation.schemas import PRIMARY_BUCKETS, MenuExpectation, Scenario
+from tests.evaluation.schemas import (
+    DIALOGUE_MODES,
+    PRIMARY_BUCKETS,
+    MenuExpectation,
+    Scenario,
+)
 
 
 MANDATORY_INTENTS = (
@@ -43,6 +49,7 @@ _PAIR_DIMENSIONS = (
     ("primary_bucket", "dialogue"),
     ("primary_bucket", "intent"),
 )
+_OPERATION_COVERAGE_THRESHOLD = len(MANDATORY_INTENTS) + len(DIALOGUE_OPERATIONS)
 
 
 def _choose_text(intent: str, rng: random.Random) -> str:
@@ -198,12 +205,31 @@ def validate_coverage(scenarios: Iterable[Scenario]) -> None:
     values = tuple(scenarios)
     present_buckets = {item.persona.primary_bucket for item in values}
     present_intents = {item.intent for item in values}
+    present_dialogues = {item.dialogue_mode for item in values}
+    present_operations = {
+        operation
+        for item in values
+        if (operation := _operation_from_scenario(item)) is not None
+    }
     missing_buckets = sorted(PRIMARY_BUCKETS - present_buckets)
     missing_intents = sorted(set(MANDATORY_INTENTS) - present_intents)
-    if missing_buckets or missing_intents:
+    missing_dialogues = sorted(DIALOGUE_MODES - present_dialogues)
+    missing_operations = (
+        [
+            operation
+            for operation in DIALOGUE_OPERATIONS
+            if operation not in present_operations
+        ]
+        if len(values) >= _OPERATION_COVERAGE_THRESHOLD
+        else []
+    )
+    if missing_buckets or missing_intents or missing_dialogues or missing_operations:
         raise ValueError(
             "coverage validation failed: "
-            f"missing primary_bucket={missing_buckets}; missing intent={missing_intents}"
+            f"missing primary_bucket={missing_buckets}; "
+            f"missing intent={missing_intents}; "
+            f"missing dialogue={missing_dialogues}; "
+            f"missing operation={missing_operations}"
         )
 
 
