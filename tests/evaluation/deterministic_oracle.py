@@ -26,6 +26,12 @@ _NON_DOWNGRADABLE_CODES = frozenset(
         "recipe.ingredients_mismatch",
         "recipe.duplicate_id",
         "constraint.forbidden_term",
+        "health.special_groups_false_positive",
+        "health.special_groups_false_negative",
+        "health.allergens_false_positive",
+        "health.allergens_false_negative",
+        "health.goals_false_positive",
+        "health.goals_false_negative",
         "nutrition.table_total_mismatch",
         "performance.response_timeout",
         "evaluation.known_gaps_invalid",
@@ -282,10 +288,22 @@ def evaluate_result(
     elapsed_ms: float = 0.0,
     known_gaps_path: Path | None = DEFAULT_KNOWN_GAPS_PATH,
 ) -> ScenarioResult:
+    normalized_elapsed = _finite_number(elapsed_ms)
+    if normalized_elapsed is None or normalized_elapsed < 0:
+        return _schema_result(scenario, elapsed_ms, "$.elapsed_ms")
+
     validated = _validated_menu(response)
     if type(validated) is str:
-        return _schema_result(scenario, elapsed_ms, validated)
+        return _schema_result(scenario, normalized_elapsed, validated)
     response_map, menu = validated
+
+    health_fields = _validated_health_fields(response_map)
+    if type(health_fields) is str:
+        return _schema_result(scenario, normalized_elapsed, health_fields)
+
+    nutrition_check = _nutrition_check(response_map, menu)
+    if type(nutrition_check) is str:
+        return _schema_result(scenario, normalized_elapsed, nutrition_check)
 
     violations: list[Violation] = []
     selected_recipes: list[Recipe] = []
@@ -433,17 +451,6 @@ def evaluate_result(
             )
         )
 
-    health_fields = _validated_health_fields(response_map)
-    if type(health_fields) is str:
-        violations.append(
-            _violation(
-                "response.schema",
-                "Response does not match the required schema.",
-                {"path": health_fields},
-            )
-        )
-        return _result(scenario, violations, elapsed_ms)
-
     extracted_groups, extracted_allergens, extracted_goals = health_fields
     health_checks = (
         (
@@ -474,16 +481,6 @@ def evaluate_result(
                 )
             )
 
-    nutrition_check = _nutrition_check(response_map, menu)
-    if type(nutrition_check) is str:
-        violations.append(
-            _violation(
-                "response.schema",
-                "Response does not match the required schema.",
-                {"path": nutrition_check},
-            )
-        )
-        return _result(scenario, violations, elapsed_ms)
     if nutrition_check is not None:
         violations.append(nutrition_check)
 
@@ -517,16 +514,6 @@ def evaluate_result(
                 )
             )
 
-    normalized_elapsed = _finite_number(elapsed_ms)
-    if normalized_elapsed is None or normalized_elapsed < 0:
-        violations.append(
-            _violation(
-                "response.schema",
-                "Response does not match the required schema.",
-                {"path": "$.elapsed_ms"},
-            )
-        )
-        return _result(scenario, violations, 0.0)
     if normalized_elapsed > 15000:
         violations.append(
             _violation(

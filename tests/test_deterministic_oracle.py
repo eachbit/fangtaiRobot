@@ -440,6 +440,41 @@ class DeterministicOracleTests(unittest.TestCase):
         self.assertEqual(codes(malformed_result), ["response.schema"])
         self.assertEqual(malformed_result.elapsed_ms, 0.0)
 
+    def test_invalid_elapsed_is_normalized_before_nested_schema_early_returns(self) -> None:
+        official = balanced_recipes()
+        malformed_health = response_for([official[1]])
+        malformed_health["constraints"] = "bad"
+        malformed_nutrition = response_for([official[1]])
+        malformed_nutrition["nutrition"] = "bad"
+        cases = (
+            (malformed_health, float("nan")),
+            (malformed_nutrition, "slow"),
+        )
+
+        for response, elapsed in cases:
+            with self.subTest(response=response, elapsed=elapsed):
+                result = evaluate_result(  # type: ignore[arg-type]
+                    scenario(), response, official, elapsed_ms=elapsed
+                )
+                self.assertEqual(codes(result), ["response.schema"])
+                self.assertEqual(result.elapsed_ms, 0.0)
+
+    def test_complete_response_schema_precedes_authenticity_and_structure(self) -> None:
+        official = balanced_recipes()
+        fake_without_constraints = response_for(
+            [recipe(999, "伪造菜", "伪造食材", "伪造步骤")]
+        )
+        del fake_without_constraints["constraints"]
+        mismatch_with_bad_nutrition = response_for([official[1]])
+        mismatch_with_bad_nutrition["menu"][0]["name"] = "伪造名称"  # type: ignore[index]
+        mismatch_with_bad_nutrition["nutrition"] = "bad"
+
+        for response in (fake_without_constraints, mismatch_with_bad_nutrition):
+            with self.subTest(response=response):
+                result = evaluate_result(scenario(), response, official)
+                self.assertEqual(codes(result), ["response.schema"])
+                self.assertFalse(result.passed)
+
     def test_exact_known_gap_pair_is_downgraded_but_other_scenario_is_not(self) -> None:
         official = balanced_recipes()
         response = response_for([official[1]])
@@ -498,6 +533,22 @@ class DeterministicOracleTests(unittest.TestCase):
             "nutrients": {"energy_kcal": 100.0}
         }
         nutrition_mismatch["nutrition"] = {"table_total": {"energy_kcal": 99.0}}
+        health_false_positive = response_for([base_item])
+        health_false_positive["constraints"] = {
+            "inferred_profile": {
+                "special_groups": ["高血压"],
+                "allergens": ["花生"],
+            },
+            "health_goals": ["控糖"],
+        }
+        health_false_negative = response_for([base_item])
+        health_persona = HealthPersona(
+            "hard-health-persona",
+            "multi_condition",
+            special_groups=("高血压",),
+            allergens=("花生",),
+            health_goals=("控糖",),
+        )
         cases = (
             ("response.schema", scenario("hard-schema"), None, official, 0.0),
             (
@@ -545,6 +596,48 @@ class DeterministicOracleTests(unittest.TestCase):
                 response_for([base_item]),
                 official,
                 15000.01,
+            ),
+            (
+                "health.special_groups_false_positive",
+                scenario("hard-health-special-fp"),
+                health_false_positive,
+                official,
+                0.0,
+            ),
+            (
+                "health.special_groups_false_negative",
+                scenario("hard-health-special-fn", persona=health_persona),
+                health_false_negative,
+                official,
+                0.0,
+            ),
+            (
+                "health.allergens_false_positive",
+                scenario("hard-health-allergens-fp"),
+                health_false_positive,
+                official,
+                0.0,
+            ),
+            (
+                "health.allergens_false_negative",
+                scenario("hard-health-allergens-fn", persona=health_persona),
+                health_false_negative,
+                official,
+                0.0,
+            ),
+            (
+                "health.goals_false_positive",
+                scenario("hard-health-goals-fp"),
+                health_false_positive,
+                official,
+                0.0,
+            ),
+            (
+                "health.goals_false_negative",
+                scenario("hard-health-goals-fn", persona=health_persona),
+                health_false_negative,
+                official,
+                0.0,
             ),
         )
 
