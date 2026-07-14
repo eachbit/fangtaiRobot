@@ -5,6 +5,7 @@ import unittest
 from collections import Counter
 from dataclasses import replace
 
+import tests.evaluation.scenario_generator as scenario_generator
 from tests.evaluation.dialogue_state_machine import (
     DIALOGUE_OPERATIONS,
     build_dialogue_plan,
@@ -12,6 +13,7 @@ from tests.evaluation.dialogue_state_machine import (
 from tests.evaluation.persona_factory import build_personas
 from tests.evaluation.scenario_generator import (
     MANDATORY_INTENTS,
+    _RELATIVE_OPERATIONS,
     generate_scenarios,
     scenario_json_bytes,
     scenarios_to_json,
@@ -267,6 +269,55 @@ class ScenarioGeneratorTests(unittest.TestCase):
         self.assertEqual(set(coverage["intent"]), set(MANDATORY_INTENTS))
         self.assertEqual(set(coverage["dialogue"]), {"single_turn", "multi_turn"})
         self.assertLess(len(coverage["operation"]), len(DIALOGUE_OPERATIONS))
+
+    def test_full_operation_threshold_matches_generation_cycle(self) -> None:
+        relative_index = MANDATORY_INTENTS.index("relative_revision")
+        expected = (
+            relative_index
+            + 1
+            + (len(_RELATIVE_OPERATIONS) - 1) * len(MANDATORY_INTENTS)
+        )
+
+        self.assertEqual(scenario_generator.MIN_FULL_OPERATION_COVERAGE, expected)
+
+    def test_pre_threshold_counts_validate_partial_operation_coverage(self) -> None:
+        relative_index = MANDATORY_INTENTS.index("relative_revision")
+        minimum = (
+            relative_index
+            + 1
+            + (len(_RELATIVE_OPERATIONS) - 1) * len(MANDATORY_INTENTS)
+        )
+        for count in (15, minimum - 1):
+            with self.subTest(count=count):
+                coverage = summarize_coverage(
+                    generate_scenarios(seed=20260713, count=count)
+                )
+                self.assertLess(
+                    len(coverage["operation"]),
+                    len(DIALOGUE_OPERATIONS),
+                )
+
+    def test_threshold_count_has_all_operations_and_rejects_missing_markers(self) -> None:
+        relative_index = MANDATORY_INTENTS.index("relative_revision")
+        minimum = (
+            relative_index
+            + 1
+            + (len(_RELATIVE_OPERATIONS) - 1) * len(MANDATORY_INTENTS)
+        )
+        scenarios = generate_scenarios(
+            seed=20260713,
+            count=minimum,
+        )
+        coverage = summarize_coverage(scenarios)
+
+        self.assertEqual(set(coverage["operation"]), set(DIALOGUE_OPERATIONS))
+
+        without_operations = tuple(
+            replace(item, scenario_id=item.scenario_id.split("-operation-", 1)[0])
+            for item in scenarios
+        )
+        with self.assertRaisesRegex(ValueError, "missing operation"):
+            summarize_coverage(without_operations)
 
     def test_generator_does_not_read_or_mutate_global_random_state(self) -> None:
         random.seed(123456)

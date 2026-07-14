@@ -49,7 +49,14 @@ _PAIR_DIMENSIONS = (
     ("primary_bucket", "dialogue"),
     ("primary_bucket", "intent"),
 )
-_OPERATION_COVERAGE_THRESHOLD = len(MANDATORY_INTENTS) + len(DIALOGUE_OPERATIONS)
+_RELATIVE_INTENT_INDEX = MANDATORY_INTENTS.index("relative_revision")
+MIN_FULL_OPERATION_COVERAGE = (
+    _RELATIVE_INTENT_INDEX
+    + 1
+    + (len(_RELATIVE_OPERATIONS) - 1) * len(MANDATORY_INTENTS)
+)
+if MANDATORY_INTENTS.index("ambiguous_request") + 1 > MIN_FULL_OPERATION_COVERAGE:
+    raise RuntimeError("ambiguous_change must occur before full operation coverage")
 
 
 def _choose_text(intent: str, rng: random.Random) -> str:
@@ -220,7 +227,7 @@ def validate_coverage(scenarios: Iterable[Scenario]) -> None:
             for operation in DIALOGUE_OPERATIONS
             if operation not in present_operations
         ]
-        if len(values) >= _OPERATION_COVERAGE_THRESHOLD
+        if len(values) >= MIN_FULL_OPERATION_COVERAGE
         else []
     )
     if missing_buckets or missing_intents or missing_dialogues or missing_operations:
