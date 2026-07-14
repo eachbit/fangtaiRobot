@@ -241,11 +241,13 @@ Add frozen `HealthMetrics` to `app/models.py` with optional fasting glucose, sys
 In `app/data_loader.py`:
 
 - parse every body measurement as a finite positive number;
-- verify `round(weight_kg / (height_cm / 100) ** 2, 1)` differs from supplied BMI by no more than `0.1`;
+- verify the unrounded `weight_kg / (height_cm / 100) ** 2` differs from supplied BMI by no more than `0.1`;
 - parse `血压_mmHg` using anchored `^(\d{2,3})/(\d{2,3})$` and require systolic pressure greater than diastolic pressure;
 - require either an empty checkup object or all seven official metric keys;
 - reject unknown or partial metric keys with a user-ID-specific `ValueError`;
 - preserve an empty metric object as `checkup_metrics=None`, never fabricate values.
+
+Validate the top-level JSON as a list of objects and strictly type all base profile fields; strings must never be split into character lists. Apply broad corruption-only sanity ranges (`height 50..250`, `weight 10..500`, `BMI 5..100`, `systolic 40..300`, `diastolic 20..200`, laboratory numeric fields `0.1..100`, uric acid `10..2000`). These ranges reject malformed synthetic input and must not be used to infer diagnoses.
 
 - [ ] **Step 6: Add data-quality regression tests**
 
