@@ -55,6 +55,43 @@ class RecipeStructureTests(unittest.TestCase):
             with self.subTest(name=item.name):
                 self.assertEqual(analyze_recipe(item).protein_style, "vegetable")
 
+    def test_common_leaf_root_gourd_and_legume_ingredients_are_vegetable(self) -> None:
+        cases = [
+            recipe("拍黄瓜", "黄瓜300g；蒜", "拍碎后拌匀"),
+            recipe("清炒莴笋", "莴笋300g", "炒熟"),
+            recipe("萝卜炖汤", "白萝卜300g；水", "炖熟"),
+            recipe("清蒸南瓜", "南瓜300g", "蒸熟"),
+            recipe("蒸贝贝南瓜", "贝贝南瓜300g", "蒸熟"),
+            recipe("毛豆炒豆角", "毛豆100g；豆角200g", "炒熟"),
+            recipe("清炒牛肝菌", "牛肝菌300g", "炒熟"),
+        ]
+
+        for item in cases:
+            with self.subTest(name=item.name):
+                self.assertEqual(analyze_recipe(item).protein_style, "vegetable")
+
+    def test_common_shellfish_ingredients_are_meat(self) -> None:
+        cases = [
+            recipe("白灼蛤蜊", "蛤蜊500g", "白灼至熟"),
+            recipe("爆炒花蛤", "花蛤500g", "炒熟"),
+            recipe("辣炒花甲", "花甲500g", "炒熟"),
+            recipe("蒜蓉扇贝", "扇贝6只", "蒸熟"),
+        ]
+
+        for item in cases:
+            with self.subTest(name=item.name):
+                self.assertEqual(analyze_recipe(item).protein_style, "meat")
+
+    def test_animal_named_condiments_do_not_make_vegetables_meat(self) -> None:
+        cases = [
+            recipe("鱼露拍黄瓜", "黄瓜300g；鱼露5g", "拍碎后拌匀"),
+            recipe("蚝油生菜", "生菜300g；蚝油10g", "炒熟"),
+        ]
+
+        for item in cases:
+            with self.subTest(name=item.name):
+                self.assertEqual(analyze_recipe(item).protein_style, "vegetable")
+
     def test_ingredients_prevent_fish_flavored_eggplant_false_positive(self) -> None:
         item = recipe("鱼香茄子", "茄子400g；蒜；醋；豆瓣酱", "炒熟")
 

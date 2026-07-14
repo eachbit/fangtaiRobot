@@ -25,8 +25,30 @@ ANIMAL_INGREDIENT_TERMS = [
     "鲍",
     "乳鸽",
     "鸽",
+    "鹌鹑",
+    "兔",
+    "鹿",
     "排骨",
     "蹄筋",
+    "火腿",
+    "培根",
+    "香肠",
+    "腊肠",
+    "海鲜",
+    "海参",
+    "贝类",
+    "扇贝",
+    "鲜贝",
+    "贝肉",
+    "蛤",
+    "花甲",
+    "蚝",
+    "牡蛎",
+    "蛏",
+    "螺",
+    "鱿",
+    "鳝",
+    "鳗",
     "肉",
 ]
 PLANT_INGREDIENT_TERMS = [
@@ -45,7 +67,56 @@ PLANT_INGREDIENT_TERMS = [
     "菌",
     "菇",
     "口蘑",
+    "莴笋",
+    "芦笋",
+    "竹笋",
+    "笋",
+    "萝卜",
+    "山药",
+    "莲藕",
+    "红薯",
+    "地瓜",
+    "芋头",
+    "洋葱",
+    "黄瓜",
+    "冬瓜",
+    "南瓜",
+    "丝瓜",
+    "苦瓜",
+    "西葫芦",
+    "彩椒",
+    "青椒",
+    "甜椒",
+    "玉米",
+    "豆角",
+    "毛豆",
+    "豌豆",
+    "蚕豆",
+    "扁豆",
+    "四季豆",
+    "荷兰豆",
+    "芸豆",
+    "豆芽",
+    "豆苗",
 ]
+NON_PROTEIN_ANIMAL_TERMS = [
+    "鸡蛋",
+    "蛋黄",
+    "蛋白",
+    "鱼露",
+    "蚝油",
+    "鸡精",
+    "鸡粉",
+    "海鲜酱",
+    "鲍鱼汁",
+    "鲍汁",
+    "鱼香",
+]
+NON_ANIMAL_INGREDIENT_REPLACEMENTS = {
+    "牛肝菌": "菌",
+    "羊肚菌": "菌",
+    "鸡枞菌": "菌",
+}
 COOKING_METHOD_TERMS = [
     ("凉拌", ("凉拌",)),
     ("蒸", ("蒸",)),
@@ -87,13 +158,21 @@ def _legacy_category(recipe: Recipe) -> str:
 
 
 def _protein_style(recipe: Recipe) -> str:
-    ingredients = recipe.ingredients.replace("鸡蛋", "").replace("蛋黄", "").replace("蛋白", "")
+    ingredients = recipe.ingredients
+    for term, replacement in NON_ANIMAL_INGREDIENT_REPLACEMENTS.items():
+        ingredients = ingredients.replace(term, replacement)
+    for term in NON_PROTEIN_ANIMAL_TERMS:
+        ingredients = ingredients.replace(term, "")
     if any(term in ingredients for term in ANIMAL_INGREDIENT_TERMS):
         return "meat"
     if any(term in ingredients for term in PLANT_INGREDIENT_TERMS):
         return "vegetable"
 
-    name = recipe.name.replace("鸡蛋", "").replace("鱼香", "")
+    name = recipe.name
+    for term, replacement in NON_ANIMAL_INGREDIENT_REPLACEMENTS.items():
+        name = name.replace(term, replacement)
+    for term in NON_PROTEIN_ANIMAL_TERMS:
+        name = name.replace(term, "")
     if any(term in name for term in ANIMAL_INGREDIENT_TERMS):
         return "meat"
     if any(term in name for term in PLANT_INGREDIENT_TERMS):
