@@ -361,6 +361,72 @@ class ScenarioGeneratorTests(unittest.TestCase):
             )
         )
 
+    def test_operation_metadata_requires_canonical_id_prefix(self) -> None:
+        scenarios = list(generate_scenarios(seed=20260713, count=40))
+        index = next(
+            index
+            for index, item in enumerate(scenarios)
+            if item.scenario_id.endswith("-operation-append_constraint")
+        )
+        append = scenarios[index]
+        forged = replace(
+            append,
+            scenario_id="arbitrary-prefix-operation-append_constraint",
+        )
+        scenarios[index] = forged
+
+        self.assertIsNone(scenario_generator._operation_from_scenario(forged))
+        with self.assertRaisesRegex(ValueError, "append_constraint"):
+            summarize_coverage(tuple(scenarios))
+
+    def test_operation_metadata_rejects_repeated_operation_marker(self) -> None:
+        scenarios = list(generate_scenarios(seed=20260713, count=40))
+        index = next(
+            index
+            for index, item in enumerate(scenarios)
+            if item.scenario_id.endswith("-operation-append_constraint")
+        )
+        append = scenarios[index]
+        forged = replace(
+            append,
+            scenario_id=append.scenario_id + "-operation-append_constraint",
+        )
+        scenarios[index] = forged
+
+        self.assertIsNone(scenario_generator._operation_from_scenario(forged))
+        with self.assertRaisesRegex(ValueError, "append_constraint"):
+            summarize_coverage(tuple(scenarios))
+
+    def test_operation_metadata_rejects_expectation_mismatch(self) -> None:
+        scenarios = list(generate_scenarios(seed=20260713, count=40))
+        index = next(
+            index
+            for index, item in enumerate(scenarios)
+            if item.scenario_id.endswith("-operation-append_constraint")
+        )
+        append = scenarios[index]
+        forged = replace(
+            append,
+            scenario_id=append.scenario_id.removesuffix("append_constraint")
+            + "request_structure_change",
+            messages=(
+                append.messages[0],
+                append.messages[1] + "请改成荤素一比二。",
+            ),
+        )
+        scenarios[index] = forged
+
+        self.assertIsNone(scenario_generator._operation_from_scenario(forged))
+        with self.assertRaisesRegex(ValueError, "append_constraint"):
+            summarize_coverage(tuple(scenarios))
+
+    def test_canonical_operation_metadata_keeps_forty_case_coverage_valid(self) -> None:
+        scenarios = generate_scenarios(seed=20260713, count=40)
+
+        coverage = summarize_coverage(scenarios)
+
+        self.assertEqual(set(coverage["operation"]), set(DIALOGUE_OPERATIONS))
+
     def test_generated_hard_constraints_are_detected_by_existing_oracle(self) -> None:
         scenarios = generate_scenarios(seed=20260713, count=200)
         cases = []

@@ -4,6 +4,7 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable
 import json
 import random
+import re
 from typing import Any
 
 from tests.evaluation.dialogue_state_machine import (
@@ -279,12 +280,42 @@ def generate_scenarios(seed: int, count: int) -> tuple[Scenario, ...]:
     return tuple(scenarios)
 
 
-def _operation_from_scenario(scenario: Scenario) -> str | None:
-    marker = "-operation-"
-    if marker not in scenario.scenario_id:
+def _operation_from_canonical_id(scenario: Scenario) -> str | None:
+    operations = "|".join(re.escape(item) for item in DIALOGUE_OPERATIONS)
+    pattern = (
+        rf"seed-(?P<seed>[+-]?\d+)-index-\d{{4}}-"
+        rf"{re.escape(scenario.intent)}-operation-(?P<operation>{operations})"
+    )
+    match = re.fullmatch(pattern, scenario.scenario_id)
+    if match is None or match.group("seed") != str(scenario.seed):
         return None
-    operation = scenario.scenario_id.rsplit(marker, 1)[1]
-    if operation not in DIALOGUE_OPERATIONS or scenario.dialogue_mode != "multi_turn":
+    return match.group("operation")
+
+
+def _operation_expectation_matches(operation: str, scenario: Scenario) -> bool:
+    expectation = scenario.expectation
+    if (
+        expectation.dish_count != 6
+        or not expectation.preserve_unaffected
+        or not set(scenario.persona.allergens).issubset(
+            expectation.forbidden_terms
+        )
+    ):
+        return False
+    if operation == "append_constraint":
+        return bool(
+            set(expectation.forbidden_terms) - set(scenario.persona.allergens)
+        )
+    if operation in {"request_structure_change", "confirm_clarification"}:
+        return expectation.meat_count == 2 and expectation.vegetable_count == 4
+    if operation == "ambiguous_change":
+        return expectation.clarification_required
+    return operation in {"retract_preference", "request_position_change"}
+
+
+def _operation_from_scenario(scenario: Scenario) -> str | None:
+    operation = _operation_from_canonical_id(scenario)
+    if operation is None or scenario.dialogue_mode != "multi_turn":
         return None
     if scenario.intent == "relative_revision":
         if operation not in _RELATIVE_OPERATIONS:
@@ -294,7 +325,10 @@ def _operation_from_scenario(scenario: Scenario) -> str | None:
             return None
     else:
         return None
-    if not operation_matches_plan(operation, scenario.messages):
+    if not operation_matches_plan(
+        operation,
+        scenario.messages,
+    ) or not _operation_expectation_matches(operation, scenario):
         return None
     return operation
 
