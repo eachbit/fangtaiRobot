@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from app.data_loader import load_recipes
 from tests.evaluation.failure_minimizer import minimize_failure
@@ -16,6 +17,7 @@ from tests.evaluation.report import (
 from tests.evaluation.runner import (
     EvaluationRunner,
     MODE_COUNTS,
+    _append_blocking_once,
     default_oracle_adapter,
 )
 from scripts.run_evaluation import build_parser, default_output_dir, main
@@ -545,6 +547,203 @@ class EvaluationRunnerTests(unittest.TestCase):
         self.assertIn(
             "dialogue.minimal_change", {item.code for item in result.violations}
         )
+
+    def test_blocking_evidence_promotes_lower_severity_in_place(self) -> None:
+        for severity in ("known_gap", "soft_review"):
+            with self.subTest(severity=severity):
+                original = ScenarioResult(
+                    "severity",
+                    True,
+                    (
+                        Violation("before", "soft_review", "before", None),
+                        Violation("same.code", severity, "lower", {"old": True}),
+                        Violation("after", "known_gap", "after", None),
+                    ),
+                    1.0,
+                )
+
+                promoted = _append_blocking_once(
+                    original, "same.code", "blocking", {"new": True}
+                )
+
+                self.assertEqual(
+                    [item.code for item in promoted.violations],
+                    ["before", "same.code", "after"],
+                )
+                self.assertEqual(promoted.violations[1].severity, "blocking")
+                self.assertEqual(promoted.violations[1].message, "blocking")
+                self.assertFalse(promoted.passed)
+
+        existing = ScenarioResult(
+            "severity",
+            False,
+            (
+                Violation("same.code", "known_gap", "lower duplicate", None),
+                Violation("middle", "soft_review", "middle", None),
+                Violation("same.code", "blocking", "original blocking", None),
+                Violation("after", "known_gap", "after", None),
+            ),
+            1.0,
+        )
+        unchanged = _append_blocking_once(
+            existing, "same.code", "must not replace", None
+        )
+        self.assertEqual(
+            [item.code for item in unchanged.violations],
+            ["middle", "same.code", "after"],
+        )
+        self.assertEqual(unchanged.violations[1].message, "original blocking")
+        self.assertFalse(unchanged.passed)
+
+    def test_adapter_promotes_known_gap_when_turns_disprove_preservation(self) -> None:
+        scenario = Scenario(
+            "promote-known-gap",
+            HealthPersona("p", "healthy"),
+            ("第一轮", "全部换掉"),
+            MenuExpectation(dish_count=2, preserve_unaffected=True),
+            7,
+            intent="relative_revision",
+            dialogue_mode="multi_turn",
+        )
+        base = ScenarioResult(
+            scenario.scenario_id,
+            True,
+            (
+                Violation(
+                    "dialogue.minimal_change",
+                    "known_gap",
+                    "known gap",
+                    None,
+                ),
+            ),
+            1.0,
+        )
+        response = self.response(2)
+        response["changes"] = {
+            "mode": "full_regeneration",
+            "kept_dishes": [],
+            "change_count": 2,
+        }
+        response["score_card"] = {"minimal_change": False}
+
+        with patch("tests.evaluation.runner.evaluate_result", return_value=base):
+            result = default_oracle_adapter(
+                scenario,
+                response,
+                {},
+                intermediates=(
+                    {"turn": 0, "menu_ids": [1, 2], "constraints": {}, "changes": {}},
+                    {
+                        "turn": 1,
+                        "menu_ids": [3, 4],
+                        "constraints": {},
+                        "changes": response["changes"],
+                    },
+                ),
+                elapsed_ms=1.0,
+                known_gaps_path=None,
+            )
+
+        matching = [
+            item
+            for item in result.violations
+            if item.code == "dialogue.minimal_change"
+        ]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0].severity, "blocking")
+        self.assertFalse(result.passed)
+
+    def test_promoted_adapter_failure_creates_record_and_cli_exit_one(self) -> None:
+        def promotion_scenarios(seed: int, count: int) -> tuple[Scenario, ...]:
+            scenarios = list(self.scenarios(seed, count))
+            first = scenarios[0]
+            scenarios[0] = Scenario(
+                first.scenario_id,
+                first.persona,
+                first.messages,
+                MenuExpectation(dish_count=2, preserve_unaffected=True),
+                first.seed,
+                intent=first.intent,
+                dialogue_mode=first.dialogue_mode,
+            )
+            return tuple(scenarios)
+
+        def session(
+            user_id: int | None, messages: list[str], **kwargs: object
+        ) -> dict[str, object]:
+            response = self.response(int(kwargs.get("menu_version") or 0) + 1)
+            if kwargs:
+                response["menu"] = [{"id": 3}, {"id": 4}]
+                response["changes"] = {
+                    "mode": "full_regeneration",
+                    "kept_dishes": [],
+                    "change_count": 2,
+                }
+                response["score_card"] = {"minimal_change": False}
+            return response
+
+        def base_oracle(
+            scenario: Scenario,
+            response: object,
+            official_recipes: object,
+            *,
+            elapsed_ms: float,
+            known_gaps_path: Path | None,
+        ) -> ScenarioResult:
+            violations = (
+                (
+                    Violation(
+                        "dialogue.minimal_change",
+                        "known_gap",
+                        "known gap",
+                        None,
+                    ),
+                )
+                if scenario.scenario_id == "case-0"
+                else ()
+            )
+            return ScenarioResult(scenario.scenario_id, True, violations, elapsed_ms)
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            runner = self.build_runner(
+                output,
+                session_fn=session,
+                evaluate_fn=default_oracle_adapter,
+                generate_fn=promotion_scenarios,
+                minimizer_max_attempts=3,
+            )
+            with patch("tests.evaluation.runner.evaluate_result", side_effect=base_oracle):
+                report = runner.run_count(10)
+
+            self.assertEqual(report.passed, 9)
+            self.assertEqual(len(report.failures), 1)
+            self.assertEqual(
+                report.failures[0].violations[0].severity, "blocking"
+            )
+
+            class CompletedRunner:
+                def run_count(self, count: int) -> EvaluationReport:
+                    return report
+
+                def run_mode(self) -> EvaluationReport:
+                    return report
+
+            exit_code = main(
+                [
+                    "--mode",
+                    "quick",
+                    "--seed",
+                    "17",
+                    "--count",
+                    "10",
+                    "--output",
+                    str(output),
+                ],
+                runner_factory=lambda *args, **kwargs: CompletedRunner(),
+            )
+
+        self.assertEqual(exit_code, 1)
 
     def test_default_adapter_blocks_lost_allergen_context(self) -> None:
         scenario = Scenario(

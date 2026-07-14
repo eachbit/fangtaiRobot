@@ -154,12 +154,40 @@ def _append_blocking_once(
     message: str,
     evidence: Mapping[str, Any] | None,
 ) -> ScenarioResult:
-    if any(item.code == code for item in result.violations):
-        return result
-    violations = result.violations + (
-        Violation(code, "blocking", message, evidence),
-    )
-    return ScenarioResult(result.scenario_id, False, violations, result.elapsed_ms)
+    replacement = Violation(code, "blocking", message, evidence)
+    violations = list(result.violations)
+    matching = [index for index, item in enumerate(violations) if item.code == code]
+    blocking = [
+        index for index in matching if violations[index].severity == "blocking"
+    ]
+    if blocking:
+        keep = blocking[0]
+        deduplicated = tuple(
+            item
+            for index, item in enumerate(violations)
+            if item.code != code or index == keep
+        )
+        return ScenarioResult(
+            result.scenario_id,
+            False,
+            deduplicated,
+            result.elapsed_ms,
+        )
+    if matching:
+        keep = matching[0]
+        violations = [
+            replacement if index == keep else item
+            for index, item in enumerate(violations)
+            if item.code != code or index == keep
+        ]
+        return ScenarioResult(
+            result.scenario_id,
+            False,
+            tuple(violations),
+            result.elapsed_ms,
+        )
+    violations.append(replacement)
+    return ScenarioResult(result.scenario_id, False, tuple(violations), result.elapsed_ms)
 
 
 def default_oracle_adapter(
@@ -210,18 +238,11 @@ def default_oracle_adapter(
     response_map = final_response if type(final_response) is dict else {}
     changes = response_map.get("changes")
     changes = changes if type(changes) is dict else {}
-    score_card = response_map.get("score_card")
-    score_card = score_card if type(score_card) is dict else {}
-    claims_minimal = (
-        changes.get("mode") == "minimal_revision"
-        or score_card.get("minimal_change") is True
-    )
     if (
         scenario.expectation.preserve_unaffected
         and first_ids
         and last_ids
         and first_ids.isdisjoint(last_ids)
-        and claims_minimal
     ):
         kept = _menu_id_set(changes.get("kept_dishes"))
         change_count = changes.get("change_count")
