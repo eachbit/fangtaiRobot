@@ -207,10 +207,15 @@ def _nutrition_check(
     if set(total_values) != expected_keys:
         return "$.nutrition.table_total"
 
-    calculated = {
-        key: round(sum(row[key] for row in nutrient_rows), 2)
-        for key in sorted(expected_keys)
-    }
+    calculated: dict[str, float] = {}
+    for key in sorted(expected_keys):
+        summed = sum(row[key] for row in nutrient_rows)
+        if not math.isfinite(summed):
+            return f"$.nutrition.table_total.{key}"
+        rounded = round(summed, 2)
+        if not math.isfinite(rounded):
+            return f"$.nutrition.table_total.{key}"
+        calculated[key] = rounded
     actual = {key: total_values[key] for key in sorted(expected_keys)}
     if calculated != actual:
         return _violation(

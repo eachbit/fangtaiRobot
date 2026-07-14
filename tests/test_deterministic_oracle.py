@@ -331,6 +331,37 @@ class DeterministicOracleTests(unittest.TestCase):
         self.assertIn("nutrition.table_total_mismatch", codes(result))
         self.assertFalse(result.passed)
 
+    def test_nutrition_sum_overflow_returns_json_safe_schema_violation(self) -> None:
+        official = balanced_recipes()
+        response = response_for([official[1], official[3]])
+        for item in response["menu"]:  # type: ignore[union-attr]
+            item["nutrition"] = {"nutrients": {"energy_kcal": 1e308}}
+        response["nutrition"] = {"table_total": {"energy_kcal": 1e308}}
+
+        result = evaluate_result(scenario(), response, official)
+
+        self.assertEqual(codes(result), ["response.schema"])
+        self.assertFalse(result.passed)
+        self.assertEqual(
+            result.violations[0].evidence,
+            {"path": "$.nutrition.table_total.energy_kcal"},
+        )
+        json.dumps(result.to_dict(), allow_nan=False)
+
+    def test_nutrition_sum_accepts_large_finite_calculation(self) -> None:
+        official = balanced_recipes()
+        response = response_for([official[1], official[3]])
+        for item in response["menu"]:  # type: ignore[union-attr]
+            item["nutrition"] = {"nutrients": {"energy_kcal": 8e307}}
+        response["nutrition"] = {"table_total": {"energy_kcal": 1.6e308}}
+
+        result = evaluate_result(scenario(), response, official)
+
+        self.assertTrue(result.passed)
+        self.assertNotIn("response.schema", codes(result))
+        self.assertNotIn("nutrition.table_total_mismatch", codes(result))
+        json.dumps(result.to_dict(), allow_nan=False)
+
     def test_nutrition_shape_requires_uniform_string_keys_and_finite_numbers(self) -> None:
         official = balanced_recipes()
         valid = response_for([official[1], official[3]])
