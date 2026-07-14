@@ -9,9 +9,10 @@ from typing import Any
 from tests.evaluation.dialogue_state_machine import (
     DIALOGUE_OPERATIONS,
     build_dialogue_plan,
+    operation_matches_plan,
     persona_disclosure,
 )
-from tests.evaluation.language_mutator import variants_for_intent
+from tests.evaluation.language_mutator import LanguageVariant, variants_for_intent
 from tests.evaluation.persona_factory import (
     ALLERGEN_OPTIONS,
     CONDITION_GROUPS,
@@ -20,6 +21,7 @@ from tests.evaluation.persona_factory import (
 from tests.evaluation.schemas import (
     DIALOGUE_MODES,
     PRIMARY_BUCKETS,
+    HealthPersona,
     MenuExpectation,
     Scenario,
 )
@@ -64,49 +66,115 @@ def _choose_text(intent: str, rng: random.Random) -> str:
     return variants[rng.randrange(len(variants))].text
 
 
-def _hard_constraint(persona: Any, rng: random.Random) -> tuple[tuple[str, ...], MenuExpectation]:
-    forbidden = tuple(persona.allergens) or ("花生",)
-    primary = forbidden[0]
-    phrasings = (
-        f"我对{primary}过敏，菜单里避开{primary}"
-        if persona.allergens
-        else f"本次忌口{primary}",
-        f"不要放{primary}",
+def _choose_variant(intent: str, rng: random.Random) -> LanguageVariant:
+    variants = variants_for_intent(intent)
+    return variants[rng.randrange(len(variants))]
+
+
+def _initial_context(persona: HealthPersona) -> str:
+    return persona_disclosure(persona) + "请按这些信息安排六道晚餐。"
+
+
+def _base_expectation(
+    persona: HealthPersona,
+    *,
+    clarification_required: bool | None = None,
+) -> MenuExpectation:
+    clarification = (
+        persona.primary_bucket == "high_risk"
+        if clarification_required is None
+        else clarification_required
     )
-    phrasing = phrasings[rng.randrange(len(phrasings))]
-    message = f"{phrasing}。本次明确避开{'、'.join(forbidden)}，请安排六道菜。"
-    return (message,), MenuExpectation(forbidden_terms=forbidden)
+    return MenuExpectation(
+        dish_count=6,
+        forbidden_terms=tuple(persona.allergens),
+        clarification_required=clarification,
+    )
 
 
-def _health_profile(persona: Any, rng: random.Random) -> tuple[tuple[str, ...], MenuExpectation]:
-    message = f"{persona_disclosure(persona)}{_choose_text('health_profile', rng)}，请安排六道菜。"
-    return (message,), MenuExpectation()
-
-
-def _structure_ratio(persona: Any, rng: random.Random) -> tuple[tuple[str, ...], MenuExpectation]:
-    phrasing = _choose_text("structure_ratio", rng)
-    message = f"{phrasing}。请明确安排六道菜，按两荤四素执行。"
+def _hard_constraint(
+    persona: HealthPersona,
+    rng: random.Random,
+) -> tuple[tuple[str, ...], MenuExpectation]:
+    options = tuple(
+        item
+        for item in ("花生", "香菜", "芹菜", "动物内脏")
+        if item not in persona.allergens
+    )
+    added = "花生" if not persona.allergens else options[rng.randrange(len(options))]
+    message = f"{_initial_context(persona)}另外本次新增忌口：不要放{added}。"
     return (
         (message,),
-        MenuExpectation(dish_count=6, meat_count=2, vegetable_count=4),
+        MenuExpectation(
+            dish_count=6,
+            forbidden_terms=(*persona.allergens, added),
+            clarification_required=persona.primary_bucket == "high_risk",
+        ),
     )
 
 
-def _cooking_diversity(persona: Any, rng: random.Random) -> tuple[tuple[str, ...], MenuExpectation]:
-    phrasing = _choose_text("cooking_diversity", rng)
-    message = f"{phrasing}。六道菜至少采用三种不同烹饪方法。"
+def _health_profile(
+    persona: HealthPersona,
+    rng: random.Random,
+) -> tuple[tuple[str, ...], MenuExpectation]:
+    del rng
+    message = f"{_initial_context(persona)}请综合这些健康情况选择菜品。"
+    return (message,), _base_expectation(persona)
+
+
+def _structure_ratio(
+    persona: HealthPersona,
+    rng: random.Random,
+) -> tuple[tuple[str, ...], MenuExpectation]:
+    variant = _choose_variant("structure_ratio", rng)
+    truth = dict(variant.ground_truth)
+    exact_ratio = truth.get("ratio_meat") == 1 and truth.get("ratio_vegetable") == 2
+    message = f"{_initial_context(persona)}{variant.text}。"
     return (
         (message,),
-        MenuExpectation(dish_count=6, minimum_cooking_methods=3),
+        MenuExpectation(
+            dish_count=6,
+            meat_count=2 if exact_ratio else None,
+            vegetable_count=4 if exact_ratio else None,
+            forbidden_terms=tuple(persona.allergens),
+            clarification_required=(
+                persona.primary_bucket == "high_risk" or not exact_ratio
+            ),
+        ),
     )
 
 
-def _nutrition_tradeoff(persona: Any, rng: random.Random) -> tuple[tuple[str, ...], MenuExpectation]:
-    message = f"{persona_disclosure(persona)}{_choose_text('nutrition_tradeoff', rng)}，请安排六道菜。"
-    return (message,), MenuExpectation()
+def _cooking_diversity(
+    persona: HealthPersona,
+    rng: random.Random,
+) -> tuple[tuple[str, ...], MenuExpectation]:
+    variants = tuple(
+        item
+        for item in variants_for_intent("cooking_diversity")
+        if dict(item.ground_truth).get("minimum_cooking_methods") == 3
+    )
+    variant = variants[rng.randrange(len(variants))]
+    message = f"{_initial_context(persona)}{variant.text}。"
+    return (
+        (message,),
+        MenuExpectation(
+            dish_count=6,
+            minimum_cooking_methods=3,
+            forbidden_terms=tuple(persona.allergens),
+            clarification_required=persona.primary_bucket == "high_risk",
+        ),
+    )
 
 
-def _safe_negative_message(persona: Any, rng: random.Random) -> str:
+def _nutrition_tradeoff(
+    persona: HealthPersona,
+    rng: random.Random,
+) -> tuple[tuple[str, ...], MenuExpectation]:
+    message = f"{_initial_context(persona)}{_choose_text('nutrition_tradeoff', rng)}。"
+    return (message,), _base_expectation(persona)
+
+
+def _safe_negative_message(persona: HealthPersona, rng: random.Random) -> str:
     missing_conditions = tuple(sorted(set(CONDITION_GROUPS) - set(persona.special_groups)))
     missing_allergens = tuple(
         item for item in ALLERGEN_OPTIONS if item not in persona.allergens
@@ -115,18 +183,28 @@ def _safe_negative_message(persona: Any, rng: random.Random) -> str:
     choices.extend(f"我没有{condition}" for condition in missing_conditions)
     choices.extend(f"我不对{allergen}过敏" for allergen in missing_allergens)
     statement = choices[rng.randrange(len(choices))]
-    return f"{statement}。请不要据此改变我已提供的健康情况、过敏和目标。"
+    return f"{_initial_context(persona)}另外，{statement}。"
 
 
-def _multi_person_conflict(persona: Any) -> tuple[tuple[str, ...], MenuExpectation]:
+def _multi_person_conflict(
+    persona: HealthPersona,
+) -> tuple[tuple[str, ...], MenuExpectation]:
     own_constraint = persona.allergens[0] if persona.allergens else "花生"
     other_constraint = "牛肉" if own_constraint != "牛肉" else "鸡蛋"
     message = (
-        f"{persona_disclosure(persona)}"
+        f"{_initial_context(persona)}"
         f"我需要避开{own_constraint}，另一位用餐者需要避开{other_constraint}，"
         "两人的约束不同，请先澄清这份菜单服务谁或是否同时满足。"
     )
-    return (message,), MenuExpectation(clarification_required=True)
+    forbidden = tuple(persona.allergens) or (own_constraint,)
+    return (
+        (message,),
+        MenuExpectation(
+            dish_count=6,
+            forbidden_terms=forbidden,
+            clarification_required=True,
+        ),
+    )
 
 
 def _scenario_id(seed: int, index: int, intent: str, operation: str | None) -> str:
@@ -182,7 +260,7 @@ def generate_scenarios(seed: int, count: int) -> tuple[Scenario, ...]:
             dialogue_mode = "multi_turn"
         elif intent == "negative_expression":
             messages = (_safe_negative_message(persona, rng),)
-            expectation = MenuExpectation()
+            expectation = _base_expectation(persona)
         else:
             messages, expectation = _multi_person_conflict(persona)
 
@@ -205,7 +283,20 @@ def _operation_from_scenario(scenario: Scenario) -> str | None:
     marker = "-operation-"
     if marker not in scenario.scenario_id:
         return None
-    return scenario.scenario_id.rsplit(marker, 1)[1]
+    operation = scenario.scenario_id.rsplit(marker, 1)[1]
+    if operation not in DIALOGUE_OPERATIONS or scenario.dialogue_mode != "multi_turn":
+        return None
+    if scenario.intent == "relative_revision":
+        if operation not in _RELATIVE_OPERATIONS:
+            return None
+    elif scenario.intent == "ambiguous_request":
+        if operation != "ambiguous_change":
+            return None
+    else:
+        return None
+    if not operation_matches_plan(operation, scenario.messages):
+        return None
+    return operation
 
 
 def validate_coverage(scenarios: Iterable[Scenario]) -> None:

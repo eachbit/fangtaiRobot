@@ -74,6 +74,22 @@ class LanguageMetamorphicTests(unittest.TestCase):
             {"direction": "more_vegetable", "preserve_unaffected": True},
         )
 
+    def test_exact_ratio_does_not_infer_dish_counts_without_context(self) -> None:
+        variant = next(item for item in LANGUAGE_VARIANTS if item.text == "荤素一比二")
+
+        self.assertEqual(
+            dict(variant.ground_truth),
+            {"ratio_meat": 1, "ratio_vegetable": 2},
+        )
+
+    def test_non_steamed_request_does_not_infer_three_methods(self) -> None:
+        variant = next(item for item in LANGUAGE_VARIANTS if item.text == "别全是蒸的")
+
+        self.assertEqual(
+            dict(variant.ground_truth),
+            {"requires_non_steamed": True},
+        )
+
     def test_expected_labels_are_not_generated_by_production_parser(self) -> None:
         source = inspect.getsource(language_mutator)
 

@@ -6,10 +6,13 @@ from collections import Counter
 from dataclasses import replace
 
 import tests.evaluation.scenario_generator as scenario_generator
+from app.models import Recipe
 from tests.evaluation.dialogue_state_machine import (
     DIALOGUE_OPERATIONS,
     build_dialogue_plan,
+    operation_matches_plan,
 )
+from tests.evaluation.deterministic_oracle import evaluate_result
 from tests.evaluation.persona_factory import build_personas
 from tests.evaluation.scenario_generator import (
     MANDATORY_INTENTS,
@@ -19,10 +22,15 @@ from tests.evaluation.scenario_generator import (
     scenarios_to_json,
     summarize_coverage,
 )
-from tests.evaluation.schemas import Scenario
+from tests.evaluation.schemas import HealthPersona, MenuExpectation, Scenario
 
 
 class ScenarioGeneratorTests(unittest.TestCase):
+    def assert_base_expectation(self, expectation: MenuExpectation, allergens: tuple[str, ...]) -> None:
+        self.assertEqual(expectation.dish_count, 6)
+        self.assertEqual(expectation.forbidden_terms, allergens)
+        self.assertFalse(expectation.preserve_unaffected)
+
     def test_two_hundred_cases_keep_exact_health_and_advanced_coverage(self) -> None:
         scenarios = generate_scenarios(seed=20260713, count=200)
         coverage = summarize_coverage(scenarios)
@@ -91,6 +99,84 @@ class ScenarioGeneratorTests(unittest.TestCase):
             for prohibited in ("确诊", "严重", "治疗"):
                 self.assertNotIn(prohibited, message)
 
+    def test_messages_and_expectations_keep_explicit_hard_constraints_aligned(self) -> None:
+        scenarios = generate_scenarios(seed=20260713, count=200)
+
+        for scenario in scenarios:
+            message = "".join(scenario.messages)
+            for allergen in scenario.persona.allergens:
+                self.assertIn(allergen, message)
+                self.assertIn(allergen, scenario.expectation.forbidden_terms)
+            if "六道" in message:
+                self.assertEqual(scenario.expectation.dish_count, 6)
+
+        hard_cases = [item for item in scenarios if item.intent == "hard_constraint"]
+        for scenario in hard_cases:
+            added = set(scenario.expectation.forbidden_terms) - set(
+                scenario.persona.allergens
+            )
+            self.assertTrue(added)
+            for term in added:
+                self.assertIn(term, "".join(scenario.messages))
+
+    def test_official_41_seafood_constraint_is_judgeable(self) -> None:
+        scenario = next(
+            item
+            for item in generate_scenarios(seed=20260713, count=200)
+            if item.persona.source_user_id == 41
+        )
+
+        self.assertIn("海鲜", "".join(scenario.messages))
+        self.assertIn("海鲜", scenario.expectation.forbidden_terms)
+        self.assertEqual(scenario.expectation.dish_count, 6)
+
+    def test_all_synthetic_scenarios_naturally_disclose_health_ground_truth(self) -> None:
+        scenarios = generate_scenarios(seed=20260713, count=200)
+        synthetic = [item for item in scenarios if item.persona.source_user_id is None]
+
+        self.assertTrue(synthetic)
+        for scenario in synthetic:
+            message = "".join(scenario.messages)
+            for fact in (
+                *scenario.persona.special_groups,
+                *scenario.persona.allergens,
+                *scenario.persona.health_goals,
+            ):
+                self.assertIn(fact, message)
+
+    def test_disclosures_are_natural_and_limit_checkup_details(self) -> None:
+        scenarios = generate_scenarios(seed=20260713, count=200)
+        internal_terms = (
+            "healthy",
+            "single_condition",
+            "multi_condition",
+            "special_group",
+            "high_risk",
+            "健康组",
+        )
+        for scenario in scenarios:
+            message = "".join(scenario.messages)
+            for term in (*internal_terms, "保持不变", "刚才说的", "确诊", "严重", "治疗"):
+                self.assertNotIn(term, message)
+            self.assertLessEqual(message.count("最近记录的"), 1)
+            if scenario.persona.primary_bucket == "high_risk":
+                self.assertIn("有些健康信息还需确认", message)
+
+    def test_high_risk_disclosure_keeps_explicit_health_facts(self) -> None:
+        persona = HealthPersona(
+            "risk-with-context",
+            "high_risk",
+            special_groups=("孕妇",),
+            allergens=("海鲜",),
+            health_goals=("补铁",),
+        )
+
+        message = build_dialogue_plan(persona, "append_constraint").messages[0]
+
+        for fact in ("有些健康信息还需确认", "孕妇", "海鲜", "补铁"):
+            self.assertIn(fact, message)
+        self.assertNotIn("high_risk", message)
+
     def test_each_intent_has_the_required_expectation(self) -> None:
         scenarios = generate_scenarios(seed=31, count=90)
         by_intent = {item.intent: item for item in scenarios}
@@ -102,8 +188,15 @@ class ScenarioGeneratorTests(unittest.TestCase):
             hard.persona.allergens[0] if hard.persona.allergens else "花生",
         )
 
-        ratio = by_intent["structure_ratio"].expectation
-        self.assertEqual((ratio.dish_count, ratio.meat_count, ratio.vegetable_count), (6, 2, 4))
+        ratio_case = by_intent["structure_ratio"]
+        ratio = ratio_case.expectation
+        self.assertEqual(ratio.dish_count, 6)
+        if "荤素一比二" in "".join(ratio_case.messages):
+            self.assertEqual((ratio.meat_count, ratio.vegetable_count), (2, 4))
+        else:
+            self.assertIsNone(ratio.meat_count)
+            self.assertIsNone(ratio.vegetable_count)
+            self.assertTrue(ratio.clarification_required)
 
         diversity = by_intent["cooking_diversity"].expectation
         self.assertEqual(diversity.dish_count, 6)
@@ -175,7 +268,10 @@ class ScenarioGeneratorTests(unittest.TestCase):
                 self.assertEqual(plan.operation.name, operation)
                 self.assertIn(len(plan.messages), (2, 3))
                 self.assertIn(expected_terms[operation], "".join(plan.messages))
+                self.assertTrue(operation_matches_plan(operation, plan.messages))
                 disclosure = plan.messages[0]
+                self.assertTrue("推荐" in disclosure or "安排" in disclosure)
+                self.assertIn("六道", disclosure)
                 for fact in (*persona.special_groups, *persona.allergens):
                     self.assertIn(fact, disclosure)
                 for fact in (*persona.special_groups, *persona.allergens):
@@ -187,21 +283,140 @@ class ScenarioGeneratorTests(unittest.TestCase):
         self.assertTrue(
             build_dialogue_plan(persona, "append_constraint").operation.added_constraints
         )
+        append = build_dialogue_plan(persona, "append_constraint")
+        self.assert_base_expectation(append.first_stage_expectation, persona.allergens)
+        self.assertNotIn(append.operation.added_constraints[0], append.messages[0])
+        self.assertNotIn(
+            append.operation.added_constraints[0],
+            append.first_stage_expectation.forbidden_terms,
+        )
+        self.assertEqual(append.expectation.dish_count, 6)
+
         retract = build_dialogue_plan(persona, "retract_preference")
         self.assertTrue(retract.operation.retracted_preferences)
         self.assertFalse(retract.operation.retracted_health_facts)
+        self.assert_base_expectation(retract.first_stage_expectation, persona.allergens)
+        self.assertEqual(retract.expectation.dish_count, 6)
         position = build_dialogue_plan(persona, "request_position_change")
+        self.assert_base_expectation(position.first_stage_expectation, persona.allergens)
+        self.assertEqual(position.expectation.dish_count, 6)
         self.assertTrue(position.expectation.preserve_unaffected)
         structure = build_dialogue_plan(persona, "request_structure_change")
+        self.assert_base_expectation(structure.first_stage_expectation, persona.allergens)
+        self.assertIsNone(structure.first_stage_expectation.meat_count)
+        self.assertNotIn("一比二", structure.messages[0])
         self.assertEqual(
             (structure.expectation.meat_count, structure.expectation.vegetable_count),
             (2, 4),
         )
         ambiguous = build_dialogue_plan(persona, "ambiguous_change")
+        self.assert_base_expectation(ambiguous.first_stage_expectation, persona.allergens)
         self.assertTrue(ambiguous.expectation.clarification_required)
         confirm = build_dialogue_plan(persona, "confirm_clarification")
         self.assertTrue(confirm.first_stage_expectation.clarification_required)
         self.assertFalse(confirm.expectation.clarification_required)
+
+    def test_operation_metadata_rejects_forged_or_noncanonical_scenarios(self) -> None:
+        scenarios = list(generate_scenarios(seed=20260713, count=40))
+        stripped = [
+            replace(item, scenario_id=item.scenario_id.split("-operation-", 1)[0])
+            for item in scenarios
+        ]
+        single_turn_indexes = [
+            index for index, item in enumerate(stripped) if item.dialogue_mode == "single_turn"
+        ][: len(DIALOGUE_OPERATIONS)]
+        for index, operation in zip(
+            single_turn_indexes,
+            DIALOGUE_OPERATIONS,
+            strict=True,
+        ):
+            item = stripped[index]
+            stripped[index] = replace(
+                item,
+                scenario_id=f"{item.scenario_id}-operation-{operation}",
+            )
+
+        with self.assertRaisesRegex(ValueError, "missing operation") as raised:
+            summarize_coverage(tuple(stripped))
+        for operation in DIALOGUE_OPERATIONS:
+            self.assertIn(operation, str(raised.exception))
+
+        genuine = next(
+            item
+            for item in scenarios
+            if "-operation-" in item.scenario_id
+        )
+        self.assertIsNone(
+            scenario_generator._operation_from_scenario(
+                replace(genuine, messages=("不符合规范的消息",))
+            )
+        )
+        self.assertIsNone(
+            scenario_generator._operation_from_scenario(
+                replace(
+                    genuine,
+                    scenario_id=genuine.scenario_id.split("-operation-", 1)[0]
+                    + "-operation-unknown",
+                )
+            )
+        )
+
+    def test_generated_hard_constraints_are_detected_by_existing_oracle(self) -> None:
+        scenarios = generate_scenarios(seed=20260713, count=200)
+        cases = []
+        for intent in ("health_profile", "hard_constraint"):
+            cases.append(
+                next(
+                    item
+                    for item in scenarios
+                    if item.intent == intent and item.expectation.forbidden_terms
+                )
+            )
+        cases.append(
+            next(
+                item
+                for item in scenarios
+                if item.dialogue_mode == "multi_turn"
+                and item.expectation.forbidden_terms
+            )
+        )
+
+        for index, scenario in enumerate(cases):
+            with self.subTest(intent=scenario.intent):
+                forbidden = scenario.expectation.forbidden_terms[0]
+                recipe = Recipe(
+                    9000 + index,
+                    f"{forbidden}测试菜",
+                    f"{forbidden}100克",
+                    "清炒至熟",
+                    [],
+                )
+                response = {
+                    "menu": [
+                        {
+                            "id": recipe.id,
+                            "name": recipe.name,
+                            "ingredients": recipe.ingredients,
+                        }
+                    ],
+                    "constraints": {
+                        "inferred_profile": {
+                            "special_groups": list(scenario.persona.special_groups),
+                            "allergens": list(scenario.persona.allergens),
+                        },
+                        "allergens": list(scenario.persona.allergens),
+                        "health_goals": list(scenario.persona.health_goals),
+                    },
+                    "user": None,
+                    "clarification_required": True,
+                    "changes": {"mode": "minimal_revision"},
+                    "score_card": {"minimal_change": True},
+                }
+                result = evaluate_result(scenario, response, {recipe.id: recipe})
+                self.assertIn(
+                    "constraint.forbidden_term",
+                    [violation.code for violation in result.violations],
+                )
 
     def test_ids_round_trip_and_serialization_are_stable(self) -> None:
         first = generate_scenarios(seed=73, count=50)

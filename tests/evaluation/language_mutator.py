@@ -68,7 +68,7 @@ LANGUAGE_VARIANTS = tuple(
                 "structure_ratio",
                 "ratio-004",
                 "one-to-two-ratio",
-                (("meat_count", 2), ("vegetable_count", 4)),
+                (("ratio_meat", 1), ("ratio_vegetable", 2)),
             ),
             LanguageVariant(
                 "不要把素菜换掉",
@@ -89,7 +89,7 @@ LANGUAGE_VARIANTS = tuple(
                 "cooking_diversity",
                 "cooking-001",
                 "cooking-diversity",
-                (("minimum_cooking_methods", 3),),
+                (("requires_non_steamed", True),),
             ),
             LanguageVariant(
                 "六道菜至少用三种做法",
