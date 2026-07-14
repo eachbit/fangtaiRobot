@@ -55,6 +55,44 @@ class RecipeStructureTests(unittest.TestCase):
             with self.subTest(name=item.name):
                 self.assertEqual(analyze_recipe(item).protein_style, "vegetable")
 
+    def test_common_soy_products_are_vegetable(self) -> None:
+        cases = [
+            recipe("凉拌腐竹", "腐竹300g", "焯水后拌匀"),
+            recipe("清炒千张", "千张300g", "炒熟"),
+            recipe("红烧豆泡", "豆泡300g", "炖煮入味"),
+            recipe("豆制品拼盘", "豆制品300g", "切片装盘"),
+        ]
+
+        for item in cases:
+            with self.subTest(name=item.name):
+                self.assertEqual(analyze_recipe(item).protein_style, "vegetable")
+
+    def test_animal_named_plants_and_mushrooms_are_vegetable(self) -> None:
+        cases = [
+            recipe("清炒鸡毛菜", "鸡毛菜300g", "炒熟"),
+            recipe("凉拌牛蒡", "牛蒡300g", "焯水后拌匀"),
+            recipe("鱼腥草沙拉", "鱼腥草300g", "拌匀"),
+            recipe("清炒鸡腿菇", "鸡腿菇300g", "炒熟"),
+            recipe("清炒猪肚菇", "猪肚菇300g", "炒熟"),
+            recipe("香煎素鸡", "素鸡300g", "煎熟"),
+        ]
+
+        for item in cases:
+            with self.subTest(name=item.name):
+                self.assertEqual(analyze_recipe(item).protein_style, "vegetable")
+
+    def test_real_animal_ingredients_override_disambiguated_plants(self) -> None:
+        cases = [
+            recipe("鸡毛菜炒鸡胸肉", "鸡毛菜200g；鸡胸肉200g", "炒熟"),
+            recipe("腐竹牛肉", "腐竹200g；牛肉200g", "炖熟"),
+            recipe("鱼腥草炖鱼肉", "鱼腥草100g；鱼肉300g", "炖熟"),
+            recipe("猪肚菇炒猪肚", "猪肚菇200g；猪肚200g", "炒熟"),
+        ]
+
+        for item in cases:
+            with self.subTest(name=item.name):
+                self.assertEqual(analyze_recipe(item).protein_style, "meat")
+
     def test_common_leaf_root_gourd_and_legume_ingredients_are_vegetable(self) -> None:
         cases = [
             recipe("拍黄瓜", "黄瓜300g；蒜", "拍碎后拌匀"),
