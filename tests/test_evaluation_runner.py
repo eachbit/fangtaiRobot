@@ -8,8 +8,16 @@ import unittest
 
 from app.data_loader import load_recipes
 from tests.evaluation.failure_minimizer import minimize_failure
-from tests.evaluation.report import compute_reviewed_metrics, write_report
-from tests.evaluation.runner import EvaluationRunner, MODE_COUNTS
+from tests.evaluation.report import (
+    compute_reviewed_metrics,
+    safe_scenario_filename,
+    write_report,
+)
+from tests.evaluation.runner import (
+    EvaluationRunner,
+    MODE_COUNTS,
+    default_oracle_adapter,
+)
 from scripts.run_evaluation import build_parser, default_output_dir, main
 from tests.evaluation.schemas import (
     EvaluationReport,
@@ -159,14 +167,25 @@ class EvaluationReportTests(unittest.TestCase):
                 "people_count": 1,
             },
         }
-        ok = ScenarioResult("structure", True, (), 1.0)
         metrics = compute_reviewed_metrics(
             (
-                (structure, structure_response, ok),
-                (conflict, conflict_response, ScenarioResult("conflict", True, (), 1.0)),
+                (structure, structure_response),
+                (conflict, conflict_response),
             )
         )
 
+        self.assertEqual(
+            set(metrics),
+            {
+                "special_groups",
+                "allergens",
+                "health_goals",
+                "dish_count",
+                "people_count",
+                "structure_intent",
+                "overall",
+            },
+        )
         self.assertEqual(
             metrics["special_groups"],
             {"tp": 1, "fp": 1, "fn": 0, "precision": 0.5, "recall": 1.0, "f1": 0.6667},
@@ -176,7 +195,7 @@ class EvaluationReportTests(unittest.TestCase):
             {"tp": 0, "fp": 1, "fn": 1, "precision": 0.0, "recall": 0.0, "f1": 0.0},
         )
         self.assertEqual(
-            metrics["goals"],
+            metrics["health_goals"],
             {"tp": 1, "fp": 0, "fn": 1, "precision": 1.0, "recall": 0.5, "f1": 0.6667},
         )
         self.assertEqual(metrics["dish_count"]["tp"], 1)
@@ -187,6 +206,35 @@ class EvaluationReportTests(unittest.TestCase):
         self.assertEqual(metrics["people_count"]["fn"], 1)
         self.assertEqual(metrics["structure_intent"]["tp"], 1)
         self.assertEqual(metrics["structure_intent"]["precision"], 1.0)
+        self.assertEqual(
+            metrics["overall"],
+            {"tp": 4, "fp": 4, "fn": 4, "precision": 0.5, "recall": 0.5, "f1": 0.5},
+        )
+
+    def test_structure_metric_ignores_oracle_result_without_explicit_response_fields(self) -> None:
+        scenario = self.scenario(
+            "structure-without-evidence",
+            persona=HealthPersona("p", "healthy"),
+            expectation=MenuExpectation(dish_count=None, meat_count=1, vegetable_count=2),
+            intent="structure_ratio",
+        )
+        response = {
+            "menu": [],
+            "constraints": {
+                "inferred_profile": {"special_groups": [], "allergens": []},
+                "allergens": [],
+                "health_goals": [],
+            },
+        }
+
+        metrics = compute_reviewed_metrics(
+            ((scenario, response, ScenarioResult(scenario.scenario_id, True, (), 1.0)),)
+        )
+
+        self.assertEqual(
+            metrics["structure_intent"],
+            {"tp": 0, "fp": 0, "fn": 1, "precision": 0.0, "recall": 0.0, "f1": 0.0},
+        )
 
     def test_write_report_creates_four_file_types_with_stable_json(self) -> None:
         violation = Violation("runner.failure", "blocking", "Failed", None)
@@ -276,6 +324,38 @@ class EvaluationReportTests(unittest.TestCase):
             self.assertEqual(failure_payload["scenario_hash"], "0123456789abcdef")
             self.assertEqual(failure_payload["violation_codes"], {"secret.failure": 1})
 
+    def test_safe_failure_filenames_are_stable_distinct_and_do_not_overwrite(self) -> None:
+        first_id = "a/b"
+        second_id = "a?b"
+        first_name = safe_scenario_filename(first_id)
+        second_name = safe_scenario_filename(second_id)
+
+        self.assertNotEqual(first_name, second_name)
+        self.assertRegex(first_name, r"^[A-Za-z0-9._-]+-[0-9a-f]{12}$")
+        self.assertRegex(second_name, r"^[A-Za-z0-9._-]+-[0-9a-f]{12}$")
+        self.assertLessEqual(len(first_name), 93)
+        self.assertEqual(first_name, safe_scenario_filename(first_id))
+
+        violation = Violation("blocking", "blocking", "failed", None)
+        failures = tuple(
+            FailureRecord(
+                scenario_id,
+                1,
+                "sha",
+                ("original",),
+                ("minimal",),
+                (violation,),
+                1.0,
+            )
+            for scenario_id in (first_id, second_id)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            write_report(EvaluationReport(2, 0, failures, {}, {}, {}), output)
+
+            names = sorted(path.name for path in (output / "failures").glob("*.json"))
+            self.assertEqual(names, sorted([first_name + ".json", second_name + ".json"]))
+
 
 class StepClock:
     def __init__(self, step: float = 0.001) -> None:
@@ -329,6 +409,7 @@ class EvaluationRunnerTests(unittest.TestCase):
         response: object,
         official_recipes: object,
         *,
+        intermediates: tuple[dict[str, object], ...],
         elapsed_ms: float,
         known_gaps_path: Path | None,
     ) -> ScenarioResult:
@@ -386,13 +467,29 @@ class EvaluationRunnerTests(unittest.TestCase):
 
     def test_multi_turn_uses_delta_version_and_records_sanitized_intermediates(self) -> None:
         calls: list[tuple[list[str], dict[str, object]]] = []
+        received_evidence: list[tuple[dict[str, object], ...]] = []
 
         def session(user_id: int | None, messages: list[str], **kwargs: object) -> dict[str, object]:
             calls.append((messages, kwargs))
             return self.response(int(kwargs.get("menu_version") or 0) + 1)
 
+        def evaluator(
+            scenario: Scenario,
+            response: object,
+            official_recipes: object,
+            *,
+            intermediates: tuple[dict[str, object], ...],
+            elapsed_ms: float,
+            known_gaps_path: Path | None,
+        ) -> ScenarioResult:
+            if scenario.scenario_id == "case-0":
+                received_evidence.append(intermediates)
+            return ScenarioResult(scenario.scenario_id, True, (), elapsed_ms)
+
         with tempfile.TemporaryDirectory() as directory:
-            runner = self.build_runner(Path(directory), session_fn=session)
+            runner = self.build_runner(
+                Path(directory), session_fn=session, evaluate_fn=evaluator
+            )
             runner.run_count(10)
 
             self.assertEqual(calls[0], (["第一轮"], {}))
@@ -409,6 +506,140 @@ class EvaluationRunnerTests(unittest.TestCase):
             self.assertEqual([item["turn"] for item in turns], [0, 1])
             self.assertEqual([item["menu_ids"] for item in turns], [[1, 2], [1, 2]])
             self.assertNotIn("session_id", json.dumps(turns, ensure_ascii=False))
+            self.assertEqual(len(received_evidence), 1)
+            self.assertIsInstance(received_evidence[0], tuple)
+            self.assertEqual([item["turn"] for item in received_evidence[0]], [0, 1])
+
+    def test_default_adapter_blocks_false_minimal_change_claim_from_turn_evidence(self) -> None:
+        scenario = Scenario(
+            "multi-evidence",
+            HealthPersona("p", "healthy"),
+            ("第一轮", "全部换掉"),
+            MenuExpectation(dish_count=2, preserve_unaffected=True),
+            7,
+            intent="relative_revision",
+            dialogue_mode="multi_turn",
+        )
+        response = self.response(2)
+        response["changes"] = {
+            "mode": "minimal_revision",
+            "kept_dishes": [1],
+            "change_count": 1,
+        }
+        result = default_oracle_adapter(
+            scenario,
+            response,
+            {},
+            intermediates=(
+                {"turn": 0, "menu_ids": [1, 2], "constraints": {}, "changes": {}},
+                {"turn": 1, "menu_ids": [3, 4], "constraints": {}, "changes": response["changes"]},
+            ),
+            elapsed_ms=1.0,
+            known_gaps_path=None,
+        )
+
+        self.assertEqual(
+            [item.code for item in result.violations].count("dialogue.minimal_change"),
+            1,
+        )
+        self.assertIn(
+            "dialogue.minimal_change", {item.code for item in result.violations}
+        )
+
+    def test_default_adapter_blocks_lost_allergen_context(self) -> None:
+        scenario = Scenario(
+            "context-evidence",
+            HealthPersona("p", "healthy", allergens=("花生",)),
+            ("我对花生过敏", "再少一道菜"),
+            MenuExpectation(dish_count=2, forbidden_terms=("花生",)),
+            7,
+            intent="relative_revision",
+            dialogue_mode="multi_turn",
+        )
+        response = self.response(2)
+        result = default_oracle_adapter(
+            scenario,
+            response,
+            {},
+            intermediates=(
+                {
+                    "turn": 0,
+                    "menu_ids": [1, 2],
+                    "constraints": {"allergens": ["花生"], "avoid_ingredients": []},
+                    "changes": {},
+                },
+                {
+                    "turn": 1,
+                    "menu_ids": [1, 2],
+                    "constraints": {"allergens": [], "avoid_ingredients": []},
+                    "changes": {},
+                },
+            ),
+            elapsed_ms=1.0,
+            known_gaps_path=None,
+        )
+
+        self.assertIn(
+            "dialogue.context_consistency", {item.code for item in result.violations}
+        )
+
+    def test_default_adapter_requires_evidence_for_every_turn(self) -> None:
+        scenario = Scenario(
+            "missing-turn-evidence",
+            HealthPersona("p", "healthy"),
+            ("第一轮", "第二轮"),
+            MenuExpectation(dish_count=2),
+            7,
+            intent="relative_revision",
+            dialogue_mode="multi_turn",
+        )
+
+        result = default_oracle_adapter(
+            scenario,
+            self.response(2),
+            {},
+            intermediates=(
+                {"turn": 0, "menu_ids": [1, 2], "constraints": {}, "changes": {}},
+            ),
+            elapsed_ms=1.0,
+            known_gaps_path=None,
+        )
+
+        self.assertIn(
+            "dialogue.execution_evidence", {item.code for item in result.violations}
+        )
+
+    def test_minimizer_replay_uses_adapter_with_complete_candidate_intermediates(self) -> None:
+        received_turn_counts: list[int] = []
+
+        def evaluator(
+            scenario: Scenario,
+            response: object,
+            official_recipes: object,
+            *,
+            intermediates: tuple[dict[str, object], ...],
+            elapsed_ms: float,
+            known_gaps_path: Path | None,
+        ) -> ScenarioResult:
+            if scenario.scenario_id == "case-0":
+                received_turn_counts.append(len(intermediates))
+                violations = (
+                    Violation("replay.block", "blocking", "blocking", None),
+                )
+            else:
+                violations = ()
+            return ScenarioResult(
+                scenario.scenario_id, not violations, violations, elapsed_ms
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            self.build_runner(
+                Path(directory),
+                evaluate_fn=evaluator,
+                minimizer_max_attempts=3,
+            ).run_count(10)
+
+        self.assertEqual(received_turn_counts, [2, 1, 1, 1])
 
     def test_exception_is_isolated_as_stable_blocking_violation(self) -> None:
         def recommend(user_id: int | None, messages: list[str]) -> dict[str, object]:
@@ -436,6 +667,7 @@ class EvaluationRunnerTests(unittest.TestCase):
             response: object,
             official_recipes: object,
             *,
+            intermediates: tuple[dict[str, object], ...],
             elapsed_ms: float,
             known_gaps_path: Path | None,
         ) -> ScenarioResult:
@@ -528,6 +760,7 @@ class EvaluationRunnerTests(unittest.TestCase):
                 response: object,
                 official_recipes: object,
                 *,
+                intermediates: tuple[dict[str, object], ...],
                 elapsed_ms: float,
                 known_gaps_path: Path | None,
             ) -> ScenarioResult:

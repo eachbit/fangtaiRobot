@@ -2,28 +2,20 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
+import hashlib
 import json
 from pathlib import Path
 import re
 from typing import Any
 
 from app.food_terms import expand_terms
-from tests.evaluation.schemas import EvaluationReport, Scenario, ScenarioResult
+from tests.evaluation.schemas import EvaluationReport, Scenario
 
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]")
 _STRUCTURE_INTENTS = frozenset(
     {"structure_ratio", "relative_revision", "cooking_diversity"}
 )
-_STRUCTURE_CODES = {
-    "structure_ratio": frozenset(
-        {"structure.dish_count", "structure.meat_count", "structure.vegetable_count"}
-    ),
-    "relative_revision": frozenset({"dialogue.minimal_change"}),
-    "cooking_diversity": frozenset({"structure.cooking_diversity"}),
-}
-
-
 def _string_set(value: object) -> set[str]:
     if type(value) is not list:
         return set()
@@ -79,51 +71,55 @@ def _response_health_fields(response: Mapping[str, Any]) -> tuple[set[str], set[
     return special_groups, set(expand_terms(sorted(allergens))), goals
 
 
-def _explicit_structure_signal(response: Mapping[str, Any]) -> bool:
+def _explicit_structure_signal(
+    scenario: Scenario, response: Mapping[str, Any]
+) -> bool:
     constraints = response.get("constraints")
-    if type(constraints) is dict and any(
+    if type(constraints) is not dict:
+        return False
+    if constraints.get("structure_intent") == scenario.intent:
+        return True
+    if scenario.intent == "structure_ratio":
+        expected = {
+            "meat_count": scenario.expectation.meat_count,
+            "vegetable_count": scenario.expectation.vegetable_count,
+        }
+        required = {key: value for key, value in expected.items() if value is not None}
+        return bool(required) and all(
+            constraints.get(key) == value for key, value in required.items()
+        )
+    if scenario.intent == "cooking_diversity":
+        expected_minimum = scenario.expectation.minimum_cooking_methods
+        actual_minimum = constraints.get("minimum_cooking_methods")
+        return (
+            type(expected_minimum) is int
+            and type(actual_minimum) is int
+            and actual_minimum >= expected_minimum
+        )
+    if scenario.intent == "relative_revision":
+        return constraints.get("preserve_unaffected") is True
+    return any(
         key in constraints
         for key in (
             "meat_count",
             "vegetable_count",
             "minimum_cooking_methods",
-            "structure_ratio",
+            "preserve_unaffected",
+            "structure_intent",
         )
-    ):
-        return True
-    changes = response.get("changes")
-    return type(changes) is dict and changes.get("mode") == "minimal_revision"
-
-
-def _structure_actual(
-    scenario: Scenario,
-    response: Mapping[str, Any],
-    result: ScenarioResult | None,
-) -> bool:
-    if scenario.intent not in _STRUCTURE_INTENTS:
-        return _explicit_structure_signal(response)
-    if result is None:
-        return _explicit_structure_signal(response)
-    codes = {violation.code for violation in result.violations}
-    if any(
-        violation.severity == "blocking"
-        and (violation.code.startswith("schema.") or violation.code == "runner.exception")
-        for violation in result.violations
-    ):
-        return False
-    return not bool(codes & _STRUCTURE_CODES[scenario.intent])
+    )
 
 
 def compute_reviewed_metrics(
     rows: Iterable[
         tuple[Scenario, Mapping[str, Any]]
-        | tuple[Scenario, Mapping[str, Any], ScenarioResult]
+        | tuple[Scenario, Mapping[str, Any], object]
     ],
 ) -> dict[str, dict[str, int | float]]:
     names = (
         "special_groups",
         "allergens",
-        "goals",
+        "health_goals",
         "dish_count",
         "people_count",
         "structure_intent",
@@ -132,7 +128,6 @@ def compute_reviewed_metrics(
 
     for row in rows:
         scenario, response = row[0], row[1]
-        result = row[2] if len(row) == 3 else None
         actual_groups, actual_allergens, actual_goals = _response_health_fields(response)
         _add_sets(counts["special_groups"], set(scenario.persona.special_groups), actual_groups)
         _add_sets(
@@ -140,7 +135,11 @@ def compute_reviewed_metrics(
             set(expand_terms(list(scenario.persona.allergens))),
             actual_allergens,
         )
-        _add_sets(counts["goals"], set(scenario.persona.health_goals), actual_goals)
+        _add_sets(
+            counts["health_goals"],
+            set(scenario.persona.health_goals),
+            actual_goals,
+        )
 
         menu = response.get("menu")
         if scenario.expectation.dish_count is not None:
@@ -155,7 +154,7 @@ def compute_reviewed_metrics(
             _add_exact(counts["people_count"], 2, actual_people)
 
         expected_structure = scenario.intent in _STRUCTURE_INTENTS
-        actual_structure = _structure_actual(scenario, response, result)
+        actual_structure = _explicit_structure_signal(scenario, response)
         if expected_structure and actual_structure:
             counts["structure_intent"]["tp"] += 1
         elif actual_structure:
@@ -163,7 +162,14 @@ def compute_reviewed_metrics(
         elif expected_structure:
             counts["structure_intent"]["fn"] += 1
 
-    return {name: _score(counts[name]) for name in names}
+    overall = {
+        key: sum(counts[name][key] for name in names)
+        for key in ("tp", "fp", "fn")
+    }
+    return {
+        **{name: _score(counts[name]) for name in names},
+        "overall": _score(overall),
+    }
 
 
 def _json_text(value: object) -> str:
@@ -188,7 +194,9 @@ def safe_scenario_filename(scenario_id: str) -> str:
     while ".." in safe:
         safe = safe.replace("..", "__")
     safe = safe.lstrip(".")
-    return safe or "scenario"
+    safe = (safe or "scenario")[:80]
+    digest = hashlib.sha256(scenario_id.encode("utf-8")).hexdigest()[:12]
+    return f"{safe}-{digest}"
 
 
 def summarize_violation_counts(report: EvaluationReport) -> dict[str, dict[str, int]]:
@@ -290,7 +298,7 @@ def write_report(
         source = source_metadata.get(failure.scenario_id, {})
         if source.get("holdout") is True:
             scenario_hash = str(source["scenario_hash"])
-            filename = f"holdout-{safe_scenario_filename(scenario_hash)}.json"
+            filename = safe_scenario_filename(f"holdout-{scenario_hash}") + ".json"
             code_counts = Counter(violation.code for violation in failure.violations)
             payload: dict[str, Any] = _holdout_failure_payload(
                 scenario_hash, code_counts

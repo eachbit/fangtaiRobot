@@ -14,6 +14,7 @@ from typing import Any
 
 from app.agent import recommend, recommend_with_session
 from app.data_loader import load_recipes
+from app.food_terms import expand_terms
 from app.models import Recipe
 from tests.evaluation.deterministic_oracle import (
     DEFAULT_KNOWN_GAPS_PATH,
@@ -127,6 +128,153 @@ def _violation_counts(results: Iterable[ScenarioResult]) -> dict[str, dict[str, 
     }
 
 
+def _constraint_terms(constraints: Mapping[str, Any]) -> set[str]:
+    values: list[str] = []
+    for key in ("allergens", "avoid_ingredients"):
+        item = constraints.get(key)
+        if type(item) is list:
+            values.extend(value for value in item if type(value) is str)
+    inferred = constraints.get("inferred_profile")
+    if type(inferred) is dict and type(inferred.get("allergens")) is list:
+        values.extend(
+            value for value in inferred["allergens"] if type(value) is str
+        )
+    return set(expand_terms(values))
+
+
+def _menu_id_set(value: object) -> set[int | str]:
+    if type(value) is not list:
+        return set()
+    return {item for item in value if type(item) in (int, str)}
+
+
+def _append_blocking_once(
+    result: ScenarioResult,
+    code: str,
+    message: str,
+    evidence: Mapping[str, Any] | None,
+) -> ScenarioResult:
+    if any(item.code == code for item in result.violations):
+        return result
+    violations = result.violations + (
+        Violation(code, "blocking", message, evidence),
+    )
+    return ScenarioResult(result.scenario_id, False, violations, result.elapsed_ms)
+
+
+def default_oracle_adapter(
+    scenario: Scenario,
+    final_response: object,
+    official_recipes: Mapping[int, Recipe],
+    *,
+    intermediates: tuple[Mapping[str, Any], ...],
+    elapsed_ms: float,
+    known_gaps_path: Path | None,
+) -> ScenarioResult:
+    result = evaluate_result(
+        scenario,
+        final_response,
+        official_recipes,
+        elapsed_ms=elapsed_ms,
+        known_gaps_path=known_gaps_path,
+    )
+    if scenario.dialogue_mode != "multi_turn":
+        return result
+
+    valid_evidence = len(intermediates) == len(scenario.messages)
+    for turn, item in enumerate(intermediates):
+        if (
+            not isinstance(item, Mapping)
+            or item.get("turn") != turn
+            or type(item.get("menu_ids")) is not list
+            or not isinstance(item.get("constraints"), Mapping)
+        ):
+            valid_evidence = False
+            result = _append_blocking_once(
+                result,
+                "dialogue.execution_evidence",
+                "Multi-turn execution evidence is incomplete.",
+                {"turn": turn},
+            )
+            break
+    if not valid_evidence:
+        return _append_blocking_once(
+            result,
+            "dialogue.execution_evidence",
+            "Multi-turn execution evidence is incomplete.",
+            {"turn": 0 if not intermediates else len(intermediates) - 1},
+        )
+
+    first_ids = _menu_id_set(intermediates[0]["menu_ids"])
+    last_ids = _menu_id_set(intermediates[-1]["menu_ids"])
+    response_map = final_response if type(final_response) is dict else {}
+    changes = response_map.get("changes")
+    changes = changes if type(changes) is dict else {}
+    score_card = response_map.get("score_card")
+    score_card = score_card if type(score_card) is dict else {}
+    claims_minimal = (
+        changes.get("mode") == "minimal_revision"
+        or score_card.get("minimal_change") is True
+    )
+    if (
+        scenario.expectation.preserve_unaffected
+        and first_ids
+        and last_ids
+        and first_ids.isdisjoint(last_ids)
+        and claims_minimal
+    ):
+        kept = _menu_id_set(changes.get("kept_dishes"))
+        change_count = changes.get("change_count")
+        result = _append_blocking_once(
+            result,
+            "dialogue.minimal_change",
+            "Turn evidence contradicts the claimed minimal revision.",
+            {
+                "first_count": len(first_ids),
+                "last_count": len(last_ids),
+                "declared_kept_count": len(kept),
+                "declared_change_count": (
+                    change_count if type(change_count) is int else None
+                ),
+            },
+        )
+
+    first_constraints = intermediates[0]["constraints"]
+    required_terms = set(expand_terms(list(scenario.persona.allergens)))
+    required_terms.update(_constraint_terms(first_constraints))
+    for turn, item in enumerate(intermediates):
+        actual_terms = _constraint_terms(item["constraints"])
+        missing = sorted(required_terms - actual_terms)
+        if missing:
+            result = _append_blocking_once(
+                result,
+                "dialogue.context_consistency",
+                "A persistent hard constraint was lost between dialogue turns.",
+                {"turn": turn, "missing_terms": missing},
+            )
+            break
+    return result
+
+
+def evaluate_execution(
+    scenario: Scenario,
+    final_response: object,
+    official_recipes: Mapping[int, Recipe],
+    *,
+    intermediates: tuple[Mapping[str, Any], ...],
+    elapsed_ms: float,
+    known_gaps_path: Path | None,
+) -> ScenarioResult:
+    return default_oracle_adapter(
+        scenario,
+        final_response,
+        official_recipes,
+        intermediates=intermediates,
+        elapsed_ms=elapsed_ms,
+        known_gaps_path=known_gaps_path,
+    )
+
+
 class EvaluationRunner:
     def __init__(
         self,
@@ -139,7 +287,7 @@ class EvaluationRunner:
         clock: Callable[[], float] = time.perf_counter,
         official_recipes: Mapping[int, Recipe] | Iterable[Recipe] | None = None,
         known_gaps_path: Path | None = DEFAULT_KNOWN_GAPS_PATH,
-        evaluate_fn: Callable[..., ScenarioResult] = evaluate_result,
+        evaluate_fn: Callable[..., ScenarioResult] = default_oracle_adapter,
         generate_fn: Callable[[int, int], tuple[Scenario, ...]] = generate_scenarios,
         corpus_root: Path | str = _DEFAULT_CORPUS_ROOT,
         include_holdout: bool = False,
@@ -403,6 +551,7 @@ class EvaluationRunner:
                     replay_scenario,
                     response,
                     self.official_recipes,
+                    intermediates=tuple(intermediates),
                     elapsed_ms=final_elapsed,
                     known_gaps_path=self.known_gaps_path,
                 )
@@ -422,7 +571,7 @@ class EvaluationRunner:
         scenarios = self._load_scenarios(count)
         self.intermediates = {}
         results: list[ScenarioResult] = []
-        reviewed_rows: list[tuple[Scenario, Mapping[str, Any], ScenarioResult]] = []
+        reviewed_rows: list[tuple[Scenario, Mapping[str, Any]]] = []
         failures: list[FailureRecord] = []
         minimizations: dict[str, dict[str, Any]] = {}
         all_timings: list[float] = []
@@ -433,7 +582,7 @@ class EvaluationRunner:
             )
             self.intermediates[scenario.scenario_id] = intermediates
             results.append(result)
-            reviewed_rows.append((scenario, response, result))
+            reviewed_rows.append((scenario, response))
             all_timings.extend(timings)
             blocking = tuple(
                 violation
