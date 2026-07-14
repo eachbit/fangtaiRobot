@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from .models import Recipe
@@ -13,44 +14,216 @@ DESSERT_TERMS = ["膏", "奶昔", "甜", "糖", "点心", "下午茶", "饮品"]
 COLD_TERMS = ["凉", "拌", "沙拉"]
 
 ANIMAL_INGREDIENT_TERMS = [
-    "猪",
-    "牛",
-    "羊",
-    "鸡",
-    "鸭",
-    "鹅",
-    "鱼",
-    "虾",
-    "蟹",
-    "鲍",
-    "乳鸽",
-    "鸽",
-    "鹌鹑",
-    "兔",
-    "鹿",
+    "猪肉",
+    "猪里脊",
+    "猪排",
+    "猪蹄",
+    "猪手",
+    "猪肋排",
+    "猪肚",
+    "猪肝",
+    "猪腰",
+    "猪耳",
+    "猪舌",
+    "猪心",
+    "猪血",
+    "猪骨",
+    "猪尾",
+    "五花肉",
+    "梅花肉",
+    "里脊肉",
+    "瘦肉",
+    "肥肉",
+    "肉末",
+    "肉馅",
+    "肉片",
+    "肉丝",
+    "肉松",
+    "肉糜",
+    "肉夹馍",
+    "咸肉",
+    "腊肉",
+    "叉烧",
     "排骨",
     "蹄筋",
+    "肥肠",
     "火腿",
     "培根",
     "香肠",
     "腊肠",
+    "午餐肉",
+    "牛肉",
+    "牛腩",
+    "牛排",
+    "牛筋",
+    "牛蹄筋",
+    "牛肚",
+    "牛百叶",
+    "牛尾",
+    "牛舌",
+    "牛肝",
+    "牛骨",
+    "肥牛",
+    "羊肉",
+    "羊排",
+    "羊腿",
+    "羊蝎子",
+    "羊肚",
+    "羊杂",
+    "鸡肉",
+    "鸡胸",
+    "鸡腿",
+    "鸡翅",
+    "鸡爪",
+    "凤爪",
+    "鸡胗",
+    "鸡肝",
+    "鸡心",
+    "鸡汤",
+    "鸡骨",
+    "整鸡",
+    "仔鸡",
+    "童子鸡",
+    "乌鸡",
+    "土鸡",
+    "三黄鸡",
+    "柴鸡",
+    "鸡块",
+    "鸡丝",
+    "鸡丁",
+    "鸭肉",
+    "鸭翅",
+    "鸭腿",
+    "鸭掌",
+    "鸭脖",
+    "鸭血",
+    "鸭胗",
+    "鸭肝",
+    "鸭胸",
+    "鸭舌",
+    "烤鸭",
+    "卤鸭",
+    "板鸭",
+    "整鸭",
+    "老鸭",
+    "鹅肉",
+    "鹅掌",
+    "鹅肝",
+    "鹅翅",
+    "鹅腿",
+    "烧鹅",
+    "整鹅",
+    "兔肉",
+    "兔腿",
+    "鹿肉",
+    "鹌鹑",
+    "乳鸽",
+    "鸽肉",
+    "鸽子",
+    "鱼肉",
+    "鱼片",
+    "鱼块",
+    "鱼柳",
+    "鱼排",
+    "鱼头",
+    "鱼尾",
+    "鱼丸",
+    "鱼籽",
+    "鱼子",
+    "鲈鱼",
+    "鲫鱼",
+    "鲤鱼",
+    "草鱼",
+    "鳕鱼",
+    "带鱼",
+    "鲳鱼",
+    "桂鱼",
+    "鳜鱼",
+    "三文鱼",
+    "龙利鱼",
+    "巴沙鱼",
+    "黄花鱼",
+    "鲶鱼",
+    "黑鱼",
+    "青鱼",
+    "鲢鱼",
+    "鳙鱼",
+    "罗非鱼",
+    "银鱼",
+    "鳗鱼",
+    "鳝鱼",
+    "黄鳝",
+    "泥鳅",
+    "鲑鱼",
+    "金枪鱼",
+    "沙丁鱼",
+    "秋刀鱼",
+    "多宝鱼",
+    "虾仁",
+    "虾肉",
+    "明虾",
+    "对虾",
+    "河虾",
+    "海虾",
+    "基围虾",
+    "龙虾",
+    "草虾",
+    "白虾",
+    "青虾",
+    "大虾",
+    "鲜虾",
+    "虾米",
+    "虾皮",
+    "虾头",
+    "虾尾",
+    "蟹肉",
+    "螃蟹",
+    "大闸蟹",
+    "河蟹",
+    "海蟹",
+    "梭子蟹",
+    "青蟹",
+    "毛蟹",
+    "蟹柳",
     "海鲜",
     "海参",
     "贝类",
     "扇贝",
     "鲜贝",
     "贝肉",
-    "蛤",
+    "干贝",
+    "蛤蜊",
+    "花蛤",
+    "蛤肉",
     "花甲",
-    "蚝",
+    "生蚝",
+    "海蚝",
     "牡蛎",
-    "蛏",
-    "螺",
-    "鱿",
-    "鳝",
-    "鳗",
-    "肉",
+    "蛏子",
+    "海螺",
+    "田螺",
+    "螺肉",
+    "鲍鱼",
+    "鱿鱼",
+    "章鱼",
+    "墨鱼",
+    "乌贼",
+    "八爪鱼",
 ]
+STANDALONE_ANIMAL_INGREDIENT_PATTERN = re.compile(
+    r"^(?:新鲜|鲜活|鲜|活)?(?:整只|整条|整)?"
+    r"(?:猪|牛|羊|鸡|鸭|鹅|鱼|虾|蟹|贝|蛤|鲍|蚝|兔|鸽|肉)"
+    r"(?=$|\s|[\d一二两三四五六七八九十半]|克|千克|公斤|斤|只|条|块|份)"
+)
+NAMED_ANIMAL_INGREDIENT_PATTERN = re.compile(
+    r"^[\u4e00-\u9fff]{1,6}(?:鸡|鸭|鹅|鱼|虾|蟹|贝|蛤|蚝|鸽)"
+    r"(?=$|\s|[\d一二两三四五六七八九十半]|克|千克|公斤|斤|只|条|块|份)"
+)
+LIVESTOCK_CUT_INGREDIENT_PATTERN = re.compile(
+    r"^(?:猪|牛|羊)[\u4e00-\u9fff]{0,3}"
+    r"(?:肉|排|肋排|肘子?|蹄|肚|肝|腰|耳|舌|心|血|骨|尾|筋|腩|百叶|油渣?|油)"
+    r"(?=$|\s|[\d一二两三四五六七八九十半]|克|千克|公斤|斤|只|条|块|份)"
+)
 PLANT_INGREDIENT_TERMS = [
     "菜",
     "蔬",
@@ -102,6 +275,7 @@ PLANT_INGREDIENT_TERMS = [
     "芸豆",
     "豆芽",
     "豆苗",
+    "牛油果",
 ]
 NON_PROTEIN_ANIMAL_TERMS = [
     "鸡蛋",
@@ -125,19 +299,22 @@ NON_ANIMAL_INGREDIENT_REPLACEMENTS = {
     "鱼腥草": "菜",
     "鸡腿菇": "菇",
     "猪肚菇": "菇",
+    "蟹味菇": "菇",
+    "海鲜菇": "菇",
+    "鲍鱼菇": "菇",
     "素鸡": "豆制品",
 }
 COOKING_METHOD_TERMS = [
-    ("凉拌", ("凉拌",)),
+    ("凉拌", ("凉拌", "冷拌", "沙拉")),
     ("蒸", ("蒸",)),
     ("炒", ("炒",)),
     ("炖", ("炖",)),
     ("煮", ("煮",)),
     ("炸", ("炸",)),
     ("烤", ("烧烤", "焗", "烤")),
-    ("凉拌", ("拌", "沙拉")),
 ]
-COLD_TEMPERATURE_TERMS = ["凉拌", "冷盘", "凉菜", "冷食", "冰镇", "沙拉"]
+COOKING_DEVICE_TERMS = ["蒸烤箱", "蒸烤架", "蒸烤盘"]
+COLD_TEMPERATURE_TERMS = ["凉拌", "冷拌", "冷盘", "凉菜", "冷食", "冰镇", "沙拉"]
 
 
 @dataclass(frozen=True)
@@ -173,7 +350,7 @@ def _protein_style(recipe: Recipe) -> str:
         ingredients = ingredients.replace(term, replacement)
     for term in NON_PROTEIN_ANIMAL_TERMS:
         ingredients = ingredients.replace(term, "")
-    if any(term in ingredients for term in ANIMAL_INGREDIENT_TERMS):
+    if _has_animal_ingredient(ingredients, allow_standalone=True):
         return "meat"
     if any(term in ingredients for term in PLANT_INGREDIENT_TERMS):
         return "vegetable"
@@ -183,18 +360,45 @@ def _protein_style(recipe: Recipe) -> str:
         name = name.replace(term, replacement)
     for term in NON_PROTEIN_ANIMAL_TERMS:
         name = name.replace(term, "")
-    if any(term in name for term in ANIMAL_INGREDIENT_TERMS):
+    if _has_animal_ingredient(name, allow_standalone=False):
         return "meat"
     if any(term in name for term in PLANT_INGREDIENT_TERMS):
         return "vegetable"
     return "other"
 
 
+def _has_animal_ingredient(text: str, allow_standalone: bool) -> bool:
+    if any(term in text for term in ANIMAL_INGREDIENT_TERMS):
+        return True
+    if not allow_standalone:
+        return False
+    items = re.split(r"[；;，,、\n]+", text)
+    for item in items:
+        ingredient = re.split(r"[:：]", item)[-1].strip()
+        if any(
+            pattern.search(ingredient)
+            for pattern in (
+                STANDALONE_ANIMAL_INGREDIENT_PATTERN,
+                NAMED_ANIMAL_INGREDIENT_PATTERN,
+                LIVESTOCK_CUT_INGREDIENT_PATTERN,
+            )
+        ):
+            return True
+    return False
+
+
 def _cooking_method(text: str) -> str:
+    normalized = text
+    for term in COOKING_DEVICE_TERMS:
+        normalized = normalized.replace(term, "")
+
+    matches: list[tuple[int, str]] = []
     for method, terms in COOKING_METHOD_TERMS:
-        if any(term in text for term in terms):
-            return method
-    return "unknown"
+        for term in terms:
+            position = normalized.rfind(term)
+            if position >= 0:
+                matches.append((position, method))
+    return max(matches, default=(-1, "unknown"))[1]
 
 
 def analyze_recipe(recipe: Recipe) -> RecipeFeatures:
