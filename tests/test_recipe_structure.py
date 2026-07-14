@@ -116,6 +116,13 @@ class RecipeStructureTests(unittest.TestCase):
             with self.subTest(ingredients=value):
                 self.assertEqual(analyze_recipe(recipe("家常菜", value)).protein_style, "meat")
 
+    def test_real_recipes_with_animal_parts_are_meat(self) -> None:
+        recipes = {item.id: item for item in load_recipes()}
+
+        for recipe_id in [27, 75, 488, 748, 902]:
+            with self.subTest(recipe_id=recipe_id, name=recipes[recipe_id].name):
+                self.assertEqual(analyze_recipe(recipes[recipe_id]).protein_style, "meat")
+
     def test_animal_ingredient_wins_over_tofu_or_mushroom(self) -> None:
         cases = [
             recipe("肉末豆腐", "豆腐300g；猪肉末80g", "炖煮入味"),
@@ -282,6 +289,25 @@ class RecipeStructureTests(unittest.TestCase):
 
         self.assertEqual(features.cooking_method, "烤")
         self.assertEqual(features.temperature, "hot")
+
+    def test_real_recipes_with_equipment_only_have_unknown_method(self) -> None:
+        recipes = {item.id: item for item in load_recipes()}
+
+        for recipe_id in [75, 278, 1220]:
+            with self.subTest(recipe_id=recipe_id, name=recipes[recipe_id].name):
+                features = analyze_recipe(recipes[recipe_id])
+                self.assertEqual(features.cooking_method, "unknown")
+                self.assertEqual(features.temperature, "unknown")
+
+    def test_real_recipe_steps_select_explicit_primary_cooking_action(self) -> None:
+        recipes = {item.id: item for item in load_recipes()}
+        expected = {958: "烤", 1540: "煮", 1226: "蒸"}
+
+        for recipe_id, method in expected.items():
+            with self.subTest(recipe_id=recipe_id, name=recipes[recipe_id].name):
+                features = analyze_recipe(recipes[recipe_id])
+                self.assertEqual(features.cooking_method, method)
+                self.assertEqual(features.temperature, "hot")
 
     def test_baked_aliases_map_to_baked_method(self) -> None:
         for name in ["芝士焗豆腐", "烧烤菌菇"]:

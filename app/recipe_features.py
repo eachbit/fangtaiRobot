@@ -130,6 +130,8 @@ ANIMAL_INGREDIENT_TERMS = [
     "鱼丸",
     "鱼籽",
     "鱼子",
+    "鱼干",
+    "小鱼干",
     "鲈鱼",
     "鲫鱼",
     "鲤鱼",
@@ -221,7 +223,12 @@ NAMED_ANIMAL_INGREDIENT_PATTERN = re.compile(
 )
 LIVESTOCK_CUT_INGREDIENT_PATTERN = re.compile(
     r"^(?:猪|牛|羊)[\u4e00-\u9fff]{0,3}"
-    r"(?:肉|排|肋排|肘子?|蹄|肚|肝|腰|耳|舌|心|血|骨|尾|筋|腩|百叶|油渣?|油)"
+    r"(?:肉|排|肋排|肋条|肘子?|蹄|肚|肝|腰|耳|舌|心|血|骨|尾|筋|腩|百叶|油渣?|油)"
+    r"(?=$|\s|[\d一二两三四五六七八九十半]|克|千克|公斤|斤|只|条|块|份)"
+)
+POULTRY_PART_INGREDIENT_PATTERN = re.compile(
+    r"^(?:鸡|鸭|鹅)[\u4e00-\u9fff]{0,2}"
+    r"(?:中翅|翅中|全腿|翅|腿|爪|掌|胸|脖|胗|肝|心|肉)"
     r"(?=$|\s|[\d一二两三四五六七八九十半]|克|千克|公斤|斤|只|条|块|份)"
 )
 PLANT_INGREDIENT_TERMS = [
@@ -304,16 +311,47 @@ NON_ANIMAL_INGREDIENT_REPLACEMENTS = {
     "鲍鱼菇": "菇",
     "素鸡": "豆制品",
 }
-COOKING_METHOD_TERMS = [
-    ("凉拌", ("凉拌", "冷拌", "沙拉")),
-    ("蒸", ("蒸",)),
-    ("炒", ("炒",)),
-    ("炖", ("炖",)),
-    ("煮", ("煮",)),
-    ("炸", ("炸",)),
-    ("烤", ("烧烤", "焗", "烤")),
+NAME_COOKING_METHOD_PATTERNS = [
+    ("凉拌", re.compile(r"凉拌|冷拌|沙拉(?!酱)")),
+    ("蒸", re.compile(r"清蒸|蒸")),
+    ("炒", re.compile(r"清炒|爆炒|炒")),
+    ("炖", re.compile(r"炖")),
+    ("煮", re.compile(r"水煮|煮")),
+    ("炸", re.compile(r"油炸|炸")),
+    ("烤", re.compile(r"烧烤|烘烤|焗|烤")),
 ]
-COOKING_DEVICE_TERMS = ["蒸烤箱", "蒸烤架", "蒸烤盘"]
+STEP_COOKING_METHOD_PATTERNS = [
+    ("凉拌", re.compile(r"凉拌|冷拌|沙拉(?!酱)")),
+    (
+        "蒸",
+        re.compile(
+            r"清蒸|蒸制|蒸熟|蒸好|蒸至|蒸\s*\d+(?:\.\d+)?\s*分钟|"
+            r"(?:放入|上锅|入锅|将)[^；。]{0,20}蒸"
+        ),
+    ),
+    ("炒", re.compile(r"翻炒|煸炒|爆炒|炒香|炒熟|热炒|下锅炒")),
+    ("炖", re.compile(r"炖煮|炖熟|焖炖|炖至|炖\s*\d+(?:\.\d+)?\s*分钟")),
+    ("煮", re.compile(r"烧煮|水煮|煮熟|煮沸|煮好|煮至|煮\s*\d+(?:\.\d+)?\s*分钟")),
+    ("炸", re.compile(r"油炸|炸至|炸熟|炸\s*\d+(?:\.\d+)?\s*分钟")),
+    (
+        "烤",
+        re.compile(r"烘烤|环风烤|烤制|烤熟|烤好|烤至|烤\s*\d+(?:\.\d+)?\s*分钟"),
+    ),
+]
+COOKING_NOISE_TERMS = [
+    "蒸烤炸烹饪机",
+    "蒸烤一体机",
+    "蒸烤箱",
+    "蒸烤架",
+    "蒸烤盘",
+    "蒸箱",
+    "蒸架",
+    "烤箱",
+    "烤盘",
+    "沙拉酱",
+    "蒸鱼豉油",
+    "炒锅",
+]
 COLD_TEMPERATURE_TERMS = ["凉拌", "冷拌", "冷盘", "凉菜", "冷食", "冰镇", "沙拉"]
 
 
@@ -381,32 +419,36 @@ def _has_animal_ingredient(text: str, allow_standalone: bool) -> bool:
                 STANDALONE_ANIMAL_INGREDIENT_PATTERN,
                 NAMED_ANIMAL_INGREDIENT_PATTERN,
                 LIVESTOCK_CUT_INGREDIENT_PATTERN,
+                POULTRY_PART_INGREDIENT_PATTERN,
             )
         ):
             return True
     return False
 
 
-def _cooking_method(text: str) -> str:
+def _without_cooking_noise(text: str) -> str:
     normalized = text
-    for term in COOKING_DEVICE_TERMS:
+    for term in COOKING_NOISE_TERMS:
         normalized = normalized.replace(term, "")
+    return normalized
+
+
+def _cooking_method(text: str, patterns: list[tuple[str, re.Pattern[str]]]) -> str:
+    normalized = _without_cooking_noise(text)
 
     matches: list[tuple[int, str]] = []
-    for method, terms in COOKING_METHOD_TERMS:
-        for term in terms:
-            position = normalized.rfind(term)
-            if position >= 0:
-                matches.append((position, method))
+    for method, pattern in patterns:
+        matches.extend((match.start(), method) for match in pattern.finditer(normalized))
     return max(matches, default=(-1, "unknown"))[1]
 
 
 def analyze_recipe(recipe: Recipe) -> RecipeFeatures:
-    cooking_method = _cooking_method(recipe.name)
+    cooking_method = _cooking_method(recipe.name, NAME_COOKING_METHOD_PATTERNS)
     if cooking_method == "unknown":
-        cooking_method = _cooking_method(recipe.steps)
+        cooking_method = _cooking_method(recipe.steps, STEP_COOKING_METHOD_PATTERNS)
 
-    if any(term in recipe.name for term in COLD_TEMPERATURE_TERMS):
+    cold_name = _without_cooking_noise(recipe.name)
+    if any(term in cold_name for term in COLD_TEMPERATURE_TERMS):
         temperature = "cold"
     elif cooking_method == "凉拌":
         temperature = "cold"
