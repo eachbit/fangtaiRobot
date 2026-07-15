@@ -46,6 +46,10 @@ class Constraints:
     meal: str | None = None
     people_count: int | None = None
     requested_dish_count: int | None = None
+    requested_meat_count: int | None = None
+    requested_vegetable_count: int | None = None
+    minimum_cooking_methods: int | None = None
+    clarification_required: bool = False
     taste: str | None = None
     avoid_tastes: list[str] = field(default_factory=list)
     health_goals: list[str] = field(default_factory=list)
@@ -63,6 +67,10 @@ class Constraints:
             "meal": self.meal,
             "people_count": self.people_count,
             "requested_dish_count": self.requested_dish_count,
+            "requested_meat_count": self.requested_meat_count,
+            "requested_vegetable_count": self.requested_vegetable_count,
+            "minimum_cooking_methods": self.minimum_cooking_methods,
+            "clarification_required": self.clarification_required,
             "taste": self.taste,
             "avoid_tastes": self.avoid_tastes,
             "health_goals": self.health_goals,

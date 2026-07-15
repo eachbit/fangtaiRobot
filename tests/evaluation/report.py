@@ -80,14 +80,27 @@ def _explicit_structure_signal(
     if constraints.get("structure_intent") == scenario.intent:
         return True
     if scenario.intent == "structure_ratio":
+        actual_meat = constraints.get("requested_meat_count")
+        if actual_meat is None:
+            actual_meat = constraints.get("meat_count")
+        actual_vegetable = constraints.get("requested_vegetable_count")
+        if actual_vegetable is None:
+            actual_vegetable = constraints.get("vegetable_count")
         expected = {
             "meat_count": scenario.expectation.meat_count,
             "vegetable_count": scenario.expectation.vegetable_count,
         }
         required = {key: value for key, value in expected.items() if value is not None}
-        return bool(required) and all(
-            constraints.get(key) == value for key, value in required.items()
-        )
+        if not required:
+            return (
+                constraints.get("clarification_required") is True
+                or response.get("clarification_required") is True
+            )
+        actual = {
+            "meat_count": actual_meat,
+            "vegetable_count": actual_vegetable,
+        }
+        return all(actual[key] == value for key, value in required.items())
     if scenario.intent == "cooking_diversity":
         expected_minimum = scenario.expectation.minimum_cooking_methods
         actual_minimum = constraints.get("minimum_cooking_methods")
@@ -97,17 +110,24 @@ def _explicit_structure_signal(
             and actual_minimum >= expected_minimum
         )
     if scenario.intent == "relative_revision":
-        return constraints.get("preserve_unaffected") is True
+        changes = response.get("changes")
+        return constraints.get("preserve_unaffected") is True or (
+            type(changes) is dict
+            and changes.get("mode") == "minimal_revision"
+            and type(changes.get("kept_dishes")) is list
+            and bool(changes["kept_dishes"])
+        )
     return any(
-        key in constraints
+        constraints.get(key) is not None
         for key in (
             "meat_count",
             "vegetable_count",
+            "requested_meat_count",
+            "requested_vegetable_count",
             "minimum_cooking_methods",
-            "preserve_unaffected",
             "structure_intent",
         )
-    )
+    ) or constraints.get("preserve_unaffected") is True
 
 
 def compute_reviewed_metrics(

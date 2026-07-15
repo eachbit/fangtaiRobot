@@ -157,8 +157,8 @@ class EvaluationReportTests(unittest.TestCase):
                 },
                 "allergens": [],
                 "health_goals": ["控糖"],
-                "meat_count": 1,
-                "vegetable_count": 1,
+                "requested_meat_count": 1,
+                "requested_vegetable_count": 1,
             },
         }
         conflict_response = {
@@ -168,6 +168,9 @@ class EvaluationReportTests(unittest.TestCase):
                 "allergens": ["坚果"],
                 "health_goals": [],
                 "people_count": 1,
+                "requested_meat_count": None,
+                "requested_vegetable_count": None,
+                "minimum_cooking_methods": None,
             },
         }
         metrics = compute_reviewed_metrics(
@@ -227,6 +230,9 @@ class EvaluationReportTests(unittest.TestCase):
                 "inferred_profile": {"special_groups": [], "allergens": []},
                 "allergens": [],
                 "health_goals": [],
+                "requested_meat_count": None,
+                "requested_vegetable_count": None,
+                "minimum_cooking_methods": None,
             },
         }
 
@@ -238,6 +244,78 @@ class EvaluationReportTests(unittest.TestCase):
             metrics["structure_intent"],
             {"tp": 0, "fp": 0, "fn": 1, "precision": 0.0, "recall": 0.0, "f1": 0.0},
         )
+
+    def test_structure_metric_uses_revision_metadata_for_relative_revision(self) -> None:
+        scenario = self.scenario(
+            "relative-revision",
+            persona=HealthPersona("p", "healthy"),
+            expectation=MenuExpectation(preserve_unaffected=True),
+            intent="relative_revision",
+        )
+        response = {
+            "menu": [],
+            "constraints": {
+                "inferred_profile": {"special_groups": [], "allergens": []},
+                "allergens": [],
+                "health_goals": [],
+                "requested_meat_count": None,
+                "requested_vegetable_count": None,
+                "minimum_cooking_methods": None,
+            },
+            "changes": {"mode": "minimal_revision", "kept_dishes": [1]},
+        }
+
+        metrics = compute_reviewed_metrics(((scenario, response),))
+
+        self.assertEqual(metrics["structure_intent"]["tp"], 1)
+        self.assertEqual(metrics["structure_intent"]["fn"], 0)
+
+    def test_structure_metric_rejects_empty_minimal_revision_claim(self) -> None:
+        scenario = self.scenario(
+            "empty-relative-revision",
+            persona=HealthPersona("p", "healthy"),
+            expectation=MenuExpectation(preserve_unaffected=True),
+            intent="relative_revision",
+        )
+        response = {
+            "menu": [],
+            "constraints": {
+                "inferred_profile": {"special_groups": [], "allergens": []},
+                "allergens": [],
+                "health_goals": [],
+            },
+            "changes": {"mode": "minimal_revision", "kept_dishes": []},
+        }
+
+        metrics = compute_reviewed_metrics(((scenario, response),))
+
+        self.assertEqual(metrics["structure_intent"]["tp"], 0)
+        self.assertEqual(metrics["structure_intent"]["fn"], 1)
+
+    def test_structure_metric_accepts_clarification_for_ambiguous_ratio(self) -> None:
+        scenario = self.scenario(
+            "ambiguous-ratio",
+            persona=HealthPersona("p", "healthy"),
+            expectation=MenuExpectation(dish_count=6),
+            intent="structure_ratio",
+        )
+        response = {
+            "menu": [],
+            "constraints": {
+                "inferred_profile": {"special_groups": [], "allergens": []},
+                "allergens": [],
+                "health_goals": [],
+                "requested_meat_count": None,
+                "requested_vegetable_count": None,
+                "minimum_cooking_methods": None,
+                "clarification_required": True,
+            },
+        }
+
+        metrics = compute_reviewed_metrics(((scenario, response),))
+
+        self.assertEqual(metrics["structure_intent"]["tp"], 1)
+        self.assertEqual(metrics["structure_intent"]["fn"], 0)
 
     def test_write_report_creates_four_file_types_with_stable_json(self) -> None:
         violation = Violation("runner.failure", "blocking", "Failed", None)

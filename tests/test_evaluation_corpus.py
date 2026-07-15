@@ -38,19 +38,26 @@ ALLOWED_PHASE1_KNOWN_GAP_CODES = {
     "structure.meat_count",
     "structure.vegetable_count",
 }
-PHASE1_KNOWN_GAP_BASELINE = frozenset(
+PHASE1_KNOWN_GAP_BASELINE = frozenset()
+RETIRED_PHASE1_KNOWN_GAPS = frozenset(
     {
         ("adv-healthy-ratio-003", "structure.meat_count"),
         ("adv-healthy-ratio-003", "structure.vegetable_count"),
+        ("adv-healthy-cooking-diversity-004", "structure.cooking_diversity"),
         ("adv-healthy-add-vegetables-preserve-005", "structure.meat_count"),
         ("adv-healthy-add-vegetables-preserve-005", "structure.vegetable_count"),
         ("adv-healthy-multi-person-tradeoff-006", "dialogue.clarification"),
         ("adv-single-glucose-ratio-008", "structure.meat_count"),
         ("adv-single-glucose-ratio-008", "structure.vegetable_count"),
         ("adv-single-uric-allergy-cooking-009", "structure.cooking_diversity"),
+        (
+            "adv-single-hypertension-metrics-tradeoff-010",
+            "structure.cooking_diversity",
+        ),
         ("adv-single-ambiguous-vegetable-ratio-012", "dialogue.clarification"),
         ("adv-multi-hypertension-uric-ratio-014", "structure.meat_count"),
         ("adv-multi-hypertension-uric-ratio-014", "structure.vegetable_count"),
+        ("adv-multi-glucose-uric-cooking-015", "structure.cooking_diversity"),
         ("adv-multi-person-allergy-conflict-018", "dialogue.clarification"),
         ("adv-special-pregnancy-allergy-ratio-020", "structure.meat_count"),
         ("adv-special-pregnancy-allergy-ratio-020", "structure.vegetable_count"),
@@ -66,16 +73,6 @@ PHASE1_KNOWN_GAP_BASELINE = frozenset(
         ("adv-high-risk-minimal-revision-028", "dialogue.clarification"),
         ("adv-high-risk-negative-hypertension-029", "dialogue.clarification"),
         ("adv-high-risk-multi-person-nutrition-conflict-030", "dialogue.clarification"),
-    }
-)
-RETIRED_PHASE1_KNOWN_GAPS = frozenset(
-    {
-        ("adv-healthy-cooking-diversity-004", "structure.cooking_diversity"),
-        (
-            "adv-single-hypertension-metrics-tradeoff-010",
-            "structure.cooking_diversity",
-        ),
-        ("adv-multi-glucose-uric-cooking-015", "structure.cooking_diversity"),
     }
 )
 REQUIRED_DISCLOSED_GOALS = {
@@ -352,14 +349,18 @@ class EvaluationCorpusIntegrityTests(unittest.TestCase):
                 pairs.append(self.assert_known_gap_item(item, seed_ids))
 
         self.assertEqual(len(pairs), len(set(pairs)))
-        self.assertEqual(len(PHASE1_KNOWN_GAP_BASELINE), 26)
+        self.assertEqual(len(PHASE1_KNOWN_GAP_BASELINE), 0)
         self.assertEqual(frozenset(pairs), PHASE1_KNOWN_GAP_BASELINE)
 
     def test_known_gap_validation_rejects_empty_owner_phase(self) -> None:
         seeds = load_scenario_directory(SEEDS_ROOT)
         seed_ids = {scenario.scenario_id for scenario in seeds}
-        payload = load_json_file(KNOWN_GAPS_PATH)
-        mutated = {**payload[0], "owner_phase": ""}
+        mutated = {
+            "scenario_id": seeds[0].scenario_id,
+            "violation_code": "dialogue.clarification",
+            "owner_phase": "",
+            "expires_after_phase": "phase2",
+        }
 
         with self.assertRaises(AssertionError):
             self.assert_known_gap_item(mutated, seed_ids)

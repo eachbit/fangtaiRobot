@@ -6,6 +6,30 @@ from app.agent import recommend
 
 
 class PlannerCapacityTests(unittest.TestCase):
+    def test_explicit_do_not_add_ingredient_is_absent_from_menu(self) -> None:
+        result = recommend(
+            None,
+            ["我有高血压，推荐六道晚餐，另外本次新增忌口：不要放香菜。"],
+        )
+
+        menu_text = " ".join(
+            f"{item['name']} {item['ingredients']}" for item in result["menu"]
+        )
+        self.assertEqual(len(result["menu"]), 6)
+        self.assertNotIn("香菜", menu_text)
+
+    def test_extra_sugar_avoidance_is_absent_from_menu(self) -> None:
+        result = recommend(
+            None,
+            ["健康情况是高血糖，推荐六道菜，避免额外糖。"],
+        )
+
+        menu_text = " ".join(
+            f"{item['name']} {item['ingredients']}" for item in result["menu"]
+        )
+        self.assertEqual(len(result["menu"]), 6)
+        self.assertNotIn("糖", menu_text)
+
     def test_large_menu_survives_multi_person_allergy_filtering(self) -> None:
         result = recommend(
             None,

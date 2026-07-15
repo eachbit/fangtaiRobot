@@ -196,14 +196,37 @@ class ConstraintExtractionTests(unittest.TestCase):
 
     def test_dish_count_tracks_additions_and_ignores_reference_counts(self) -> None:
         additions = extract_constraints(
-            ["先推荐四道菜。", "再多加两道素菜，原来的四道菜都保留。"]
+            ["先推荐四道菜，两荤两素。", "再多加两道素菜，原来的四道菜都保留。"]
         )
         replacement = extract_constraints(
             ["先给四道菜。", "只换第二道，其他三道菜保留。"]
         )
 
         self.assertEqual(additions.requested_dish_count, 6)
+        self.assertEqual(additions.requested_meat_count, 2)
+        self.assertEqual(additions.requested_vegetable_count, 4)
         self.assertEqual(replacement.requested_dish_count, 4)
+
+    def test_later_absolute_count_cancels_earlier_structure_increment(self) -> None:
+        constraints = extract_constraints(
+            [
+                "先推荐四道菜，两荤两素。",
+                "再加两道素菜。",
+                "还是改成四道菜。",
+            ]
+        )
+
+        self.assertEqual(constraints.requested_dish_count, 4)
+        self.assertEqual(constraints.requested_meat_count, 2)
+        self.assertEqual(constraints.requested_vegetable_count, 2)
+        self.assertIs(constraints.clarification_required, False)
+
+    def test_clock_time_does_not_override_explicit_structure(self) -> None:
+        constraints = extract_constraints(["晚餐六道菜，两荤四素，18:30开饭。"])
+
+        self.assertEqual(constraints.requested_meat_count, 2)
+        self.assertEqual(constraints.requested_vegetable_count, 4)
+        self.assertIs(constraints.clarification_required, False)
 
     def test_dish_count_ignores_prohibited_merged_dish_phrase(self) -> None:
         constraints = extract_constraints(
@@ -239,6 +262,27 @@ class ConstraintExtractionTests(unittest.TestCase):
                     infer_profile_from_text(text)["allergens"],
                     expected,
                 )
+
+    def test_do_not_add_ingredient_phrase_removes_cooking_verb(self) -> None:
+        constraints = extract_constraints(["这顿不要放香菜，也别加花生。"])
+
+        self.assertIn("香菜", constraints.avoid_ingredients)
+        self.assertIn("花生", constraints.avoid_ingredients)
+        self.assertNotIn("放香菜", constraints.avoid_ingredients)
+        self.assertNotIn("加花生", constraints.avoid_ingredients)
+
+    def test_do_not_add_conjoined_ingredients_creates_separate_hard_constraints(self) -> None:
+        constraints = extract_constraints(["不要放香菜和葱，也别加花生、芝麻。"])
+
+        for ingredient in ("香菜", "葱", "花生", "芝麻"):
+            with self.subTest(ingredient=ingredient):
+                self.assertIn(ingredient, constraints.avoid_ingredients)
+        self.assertNotIn("香菜和葱", constraints.avoid_ingredients)
+
+    def test_avoid_extra_sugar_becomes_hard_ingredient_constraint(self) -> None:
+        constraints = extract_constraints(["避免海鲜和额外糖。"])
+
+        self.assertIn("糖", constraints.avoid_ingredients)
 
 
 if __name__ == "__main__":

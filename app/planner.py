@@ -3,7 +3,7 @@ from __future__ import annotations
 from .models import Constraints, Recipe, UserProfile
 from .nutrition_calculator import calculate_recipe_nutrition
 from .nutrition_scoring import score_table_nutrition
-from .recipe_features import classify_recipe
+from .recipe_features import analyze_recipe, classify_recipe
 from .retriever import rank_recipes
 
 
@@ -15,7 +15,11 @@ def plan_meal(
     excluded_recipe_ids: set[int] | None = None,
 ) -> dict:
     menu_size = _menu_size(constraints)
-    candidate_limit = max(18, menu_size * 20)
+    has_exact_structure = (
+        constraints.requested_meat_count is not None
+        and constraints.requested_vegetable_count is not None
+    )
+    candidate_limit = len(recipes) if has_exact_structure else max(18, menu_size * 20)
     ranked = rank_recipes(
         recipes,
         constraints,
@@ -25,7 +29,7 @@ def plan_meal(
     if excluded_recipe_ids:
         ranked = [item for item in ranked if item["recipe"].id not in excluded_recipe_ids]
     ranked = _rank_with_nutrition(ranked, constraints, user)
-    selected = _diverse_select(ranked, menu_size)
+    selected = _constraint_select(ranked, menu_size, constraints)
     warnings = _collect_warnings(selected)
 
     if not selected and recipes:
@@ -88,6 +92,7 @@ def finalize_menu(
         },
         "confidence": table_nutrition["confidence"],
         "warnings": warnings,
+        "clarification_required": constraints.clarification_required,
         "answer": build_answer(menu, constraints, warnings),
     }
     if changes is not None:
@@ -159,6 +164,113 @@ def _diverse_select(ranked: list[dict], size: int) -> list[dict]:
         if len(selected) >= size:
             break
     return selected
+
+
+def _constraint_select(
+    ranked: list[dict],
+    size: int,
+    constraints: Constraints,
+) -> list[dict]:
+    meat_count = constraints.requested_meat_count
+    vegetable_count = constraints.requested_vegetable_count
+    if (
+        meat_count is not None
+        and vegetable_count is not None
+        and meat_count + vegetable_count == size
+    ):
+        return _select_protein_counts(
+            ranked,
+            size,
+            meat_count,
+            vegetable_count,
+            constraints.minimum_cooking_methods,
+        )
+    if constraints.minimum_cooking_methods:
+        return _select_cooking_methods(
+            ranked,
+            size,
+            constraints.minimum_cooking_methods,
+        )
+    return _diverse_select(ranked, size)
+
+
+def _select_protein_counts(
+    ranked: list[dict],
+    size: int,
+    meat_count: int,
+    vegetable_count: int,
+    minimum_methods: int | None,
+) -> list[dict]:
+    selected: list[dict] = []
+    used_names: set[str] = set()
+    used_methods: set[str] = set()
+
+    for style, count in (("meat", meat_count), ("vegetable", vegetable_count)):
+        for _ in range(count):
+            candidates = [
+                item
+                for item in ranked
+                if item["recipe"].name not in used_names
+                and analyze_recipe(item["recipe"]).protein_style == style
+            ]
+            if minimum_methods and len(used_methods) < minimum_methods:
+                novel = [
+                    item
+                    for item in candidates
+                    if analyze_recipe(item["recipe"]).cooking_method
+                    not in used_methods | {"unknown"}
+                ]
+                if novel:
+                    candidates = novel
+            if not candidates:
+                break
+            item = candidates[0]
+            feature = analyze_recipe(item["recipe"])
+            selected.append(item)
+            used_names.add(item["recipe"].name)
+            if feature.cooking_method != "unknown":
+                used_methods.add(feature.cooking_method)
+    return selected[:size]
+
+
+def _select_cooking_methods(
+    ranked: list[dict],
+    size: int,
+    minimum_methods: int,
+) -> list[dict]:
+    candidates = [
+        item
+        for item in ranked
+        if analyze_recipe(item["recipe"]).cooking_method != "unknown"
+    ]
+    selected: list[dict] = []
+    used_names: set[str] = set()
+    used_methods: set[str] = set()
+    for item in candidates:
+        feature = analyze_recipe(item["recipe"])
+        if feature.cooking_method in used_methods:
+            continue
+        selected.append(item)
+        used_names.add(item["recipe"].name)
+        used_methods.add(feature.cooking_method)
+        if len(used_methods) >= minimum_methods:
+            break
+
+    for item in _balanced_select(candidates, size):
+        if item["recipe"].name in used_names:
+            continue
+        selected.append(item)
+        used_names.add(item["recipe"].name)
+        if len(selected) >= size:
+            return selected[:size]
+    for item in candidates:
+        if item["recipe"].name in used_names:
+            continue
+        selected.append(item)
+        used_names.add(item["recipe"].name)
+        if len(selected) >= size:
+            break
+    return selected[:size]
 
 
 def _balanced_select(ranked: list[dict], size: int) -> list[dict]:
@@ -252,7 +364,10 @@ def build_answer(menu: list[dict], constraints: Constraints, warnings: list[str]
         return "暂未找到合适的官方菜谱，请减少限制条件后重试。"
     meal = constraints.meal or "这一餐"
     names = "、".join(item["name"] for item in menu)
-    parts = [f"建议{meal}安排：{names}。"]
+    parts = []
+    if constraints.clarification_required:
+        parts.append("为确保方案准确，请先确认未明确的健康、人数或搭配要求；以下菜单仅作暂行参考。")
+    parts.append(f"建议{meal}安排：{names}。")
     if constraints.health_goals:
         parts.append(f"已优先考虑：{'、'.join(constraints.health_goals)}。")
     if constraints.allergens:

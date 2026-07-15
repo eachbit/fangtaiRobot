@@ -21,6 +21,8 @@
 - 约束评分卡。
 - 部署文档、技术方案文档、演示材料。
 
+精确表达“荤素一比二”“两荤四素”或“再加两道素菜”时，系统会把整桌结构作为可验证约束执行；模糊搭配、多人冲突和高风险健康表达会在响应中标记需要进一步确认。
+
 ## Data
 
 官方数据文件不提交到 GitHub。请按 `data/README.md` 放置本地数据。
@@ -103,6 +105,31 @@ python -m unittest discover -s tests -p "test_*.py" -v
 python tests/audit_recommendations.py
 python tests/nutrition_coverage.py
 ```
+
+### 持续评测
+
+确定性评测覆盖健康档案、过敏/忌口、菜谱真实性、荤素结构、烹饪方式、营养计算、多轮上下文和最小修改：
+
+```powershell
+# 120 个场景，适合每次修改后运行
+python scripts/run_evaluation.py --mode quick --seed 20260713
+
+# 2000 个场景，适合每日回归
+python scripts/run_evaluation.py --mode daily --seed 20260713
+
+# 10000 个场景，并可加入不提交仓库的私有盲测集
+python scripts/run_evaluation.py --mode deep --seed 20260713 --include-holdout --holdout-dir <目录>
+```
+
+报告默认写入 `artifacts/evaluation/`。`blocking` 表示必须修复的失败并使命令返回非零；`known_gap` 只能登记精确的“场景 ID + 违反代码”，且必须有阶段负责人和到期阶段。当前 Phase 1 known gap 清单为空，已修复项仍由退役回归测试持续检查。
+
+### 开发与提交边界
+
+- Phase 1：确定性评测、健康 Persona、覆盖率报告和开发期 Agent 候选契约。
+- Phase 2：精确荤素/烹饪结构、主动澄清、多轮结构合并及最小菜单修改。
+- Phase 3：后续扩展每日多 Agent 探索、失败最小化和候选审核闭环。
+
+外部 Agent 只在开发期生成测试候选或软评审，不能修改硬约束标准答案、known gaps 或生产推荐结果。正式 API 与 Docker 镜像不调用外部模型，断网且没有任何 Agent 配置时仍可完整运行。
 
 ## Repository
 

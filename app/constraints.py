@@ -115,7 +115,7 @@ _NARRATIVE_ITEM_PREFIXES = (
 _CONTRAST_BOUNDARY = re.compile(r"(?:但是|但|不过(?!敏)|然而|而是|后来)")
 _DISH_INCREMENT_PATTERN = re.compile(
     r"(?:再|另外|只)?(?:多)?加\s*([一二两三四五六七八九十\d]+)\s*道"
-    r"(?:素菜|荤菜|菜)?"
+    r"(素菜|荤菜|菜)?"
 )
 _DISH_ABSOLUTE_PATTERN = re.compile(
     r"(?:"
@@ -129,6 +129,42 @@ _DISH_ABSOLUTE_PATTERN = re.compile(
 _DISH_REFERENCE_SUFFIX = re.compile(
     r"(?:其他|其余|剩余|原来(?:的)?|保留的?|未影响的?|混成|合成|"
     r"前|后|这|那|上述|第)\s*$"
+)
+_STRUCTURE_COMPOSITION_PATTERN = re.compile(
+    r"([一二两三四五六七八九十\d]+)\s*荤\s*"
+    r"([一二两三四五六七八九十\d]+)\s*素"
+)
+_STRUCTURE_RATIO_PATTERN = re.compile(
+    r"荤素(?:比例)?(?:按|为|是)?\s*([一二两三四五六七八九十\d]+)\s*"
+    r"(?:比|[:：])\s*([一二两三四五六七八九十\d]+)"
+)
+_COOKING_METHOD_MINIMUM_PATTERN = re.compile(
+    r"至少[^；;。\n]{0,24}?([一二两三四五六七八九十\d]+)\s*种"
+    r"(?:不同)?(?:做法|烹饪方式|烹饪方法)"
+)
+_CLARIFICATION_MARKERS = (
+    "还需确认",
+    "需要确认",
+    "请先确认",
+    "先确认",
+    "请先澄清",
+    "先澄清",
+    "先问清",
+    "问清",
+    "询问",
+    "没想好",
+    "这份菜单调整一下",
+    "要求不同",
+    "约束不同",
+    "服务谁",
+    "优先级",
+    "医嘱",
+    "用药",
+    "医疗边界",
+    "肉菜太多",
+    "多来几个素菜",
+    "少整点荤",
+    "吃啥",
 )
 
 
@@ -156,6 +192,16 @@ def _split_disclosed_values(value: str) -> list[str]:
             break
         values.append(cleaned)
     return _dedupe(values)
+
+
+def _split_ingredient_values(value: str) -> list[str]:
+    return _dedupe(
+        [
+            item.strip()
+            for item in re.split(r"(?:以及|和|及|与|、)", value)
+            if item.strip()
+        ]
+    )
 
 
 def _extract_disclosed_values(text: str, pattern: re.Pattern[str]) -> list[str]:
@@ -258,6 +304,122 @@ def _extract_requested_dish_count(text: str) -> int | None:
     return requested
 
 
+def _scaled_structure_counts(
+    meat: int,
+    vegetable: int,
+    dish_count: int | None,
+) -> tuple[int, int]:
+    total = meat + vegetable
+    if dish_count and total > 0 and dish_count % total == 0:
+        multiplier = dish_count // total
+        return meat * multiplier, vegetable * multiplier
+    return meat, vegetable
+
+
+def _extract_structure_counts(
+    text: str,
+    dish_count: int | None,
+) -> tuple[int | None, int | None]:
+    structure_matches = [
+        *[(match.start(), match) for match in _STRUCTURE_COMPOSITION_PATTERN.finditer(text)],
+        *[(match.start(), match) for match in _STRUCTURE_RATIO_PATTERN.finditer(text)],
+    ]
+    if not structure_matches:
+        return None, None
+
+    _, match = max(structure_matches, key=lambda item: item[0])
+    meat = _parse_chinese_number(match.group(1))
+    vegetable = _parse_chinese_number(match.group(2))
+    if meat is None or vegetable is None:
+        return None, None
+
+    increment_matches = list(_DISH_INCREMENT_PATTERN.finditer(text, match.end()))
+    increment_spans = [(item.start(), item.end()) for item in increment_matches]
+    reset_position = match.end()
+    for absolute in _DISH_ABSOLUTE_PATTERN.finditer(text, match.end()):
+        if any(start <= absolute.start() < end for start, end in increment_spans):
+            continue
+        prefix = text[max(match.end(), absolute.start() - 10):absolute.start()]
+        if _DISH_REFERENCE_SUFFIX.search(prefix):
+            continue
+        reset_position = max(reset_position, absolute.end())
+
+    later_increments: list[tuple[int, str]] = []
+    for increment in increment_matches:
+        if increment.start() < reset_position:
+            continue
+        value = _parse_chinese_number(increment.group(1))
+        category = increment.group(2)
+        if value is not None and category in {"荤菜", "素菜"}:
+            later_increments.append((value, category))
+
+    base_dish_count = dish_count
+    if base_dish_count is not None:
+        base_dish_count -= sum(value for value, _ in later_increments)
+    meat, vegetable = _scaled_structure_counts(meat, vegetable, base_dish_count)
+    for value, category in later_increments:
+        if category == "荤菜":
+            meat += value
+        else:
+            vegetable += value
+    return meat, vegetable
+
+
+def _extract_minimum_cooking_methods(text: str) -> int | None:
+    matches = list(_COOKING_METHOD_MINIMUM_PATTERN.finditer(text))
+    if not matches:
+        return None
+    return _parse_chinese_number(matches[-1].group(1))
+
+
+def _requires_clarification(
+    text: str,
+    dish_count: int | None,
+    meat_count: int | None,
+    vegetable_count: int | None,
+) -> bool:
+    if any(marker in text for marker in _CLARIFICATION_MARKERS):
+        return True
+    blood_pressure = re.search(
+        r"(?:血压|收缩压)[^，,。；;\n\d]{0,8}(\d{2,3})\s*/\s*(\d{2,3})",
+        text,
+    )
+    if blood_pressure and (
+        int(blood_pressure.group(1)) >= 160
+        or int(blood_pressure.group(2)) >= 100
+    ):
+        return True
+    glucose = re.search(
+        r"(?:空腹)?血糖(?:为|是)?\s*(\d+(?:\.\d+)?)",
+        text,
+    )
+    if glucose and float(glucose.group(1)) >= 9.0:
+        return True
+    if re.search(
+        r"(?:素菜|荤菜|肉菜)[^，,。；;\n]{0,8}(?:多|少)(?:一?点|一些|些|几个)?",
+        text,
+    ):
+        return True
+    if (
+        text.count("一个人") >= 2
+        and re.search(r"(?:想吃|喜欢|爱吃)[^，,。；;\n]{0,4}辣", text)
+        and re.search(
+            r"(?:不想|不吃|不能|不碰|不喜欢)[^，,。；;\n]{0,6}辣"
+            r"|辣[^，,。；;\n]{0,8}(?:不想碰|不能碰|不碰)",
+            text,
+        )
+    ):
+        return True
+    if (
+        dish_count is not None
+        and meat_count is not None
+        and vegetable_count is not None
+        and meat_count + vegetable_count != dish_count
+    ):
+        return True
+    return False
+
+
 def extract_constraints(messages: list[str], user: UserProfile | None = None) -> Constraints:
     text = "\n".join(messages)
     constraints = Constraints(raw_messages=messages)
@@ -286,6 +448,26 @@ def extract_constraints(messages: list[str], user: UserProfile | None = None) ->
         constraints.people_count = 4
 
     constraints.requested_dish_count = _extract_requested_dish_count(text)
+    (
+        constraints.requested_meat_count,
+        constraints.requested_vegetable_count,
+    ) = _extract_structure_counts(text, constraints.requested_dish_count)
+    if (
+        constraints.requested_dish_count is None
+        and constraints.requested_meat_count is not None
+        and constraints.requested_vegetable_count is not None
+    ):
+        constraints.requested_dish_count = (
+            constraints.requested_meat_count
+            + constraints.requested_vegetable_count
+        )
+    constraints.minimum_cooking_methods = _extract_minimum_cooking_methods(text)
+    constraints.clarification_required = _requires_clarification(
+        text,
+        constraints.requested_dish_count,
+        constraints.requested_meat_count,
+        constraints.requested_vegetable_count,
+    )
 
     constraints.avoid_tastes.extend(_extract_avoid_tastes(text))
 
@@ -306,8 +488,20 @@ def extract_constraints(messages: list[str], user: UserProfile | None = None) ->
         if ingredient in text:
             constraints.preferred_ingredients.append(ingredient)
 
-    for match in re.finditer(r"(?:不|别)(?:喜欢吃|爱吃|想吃|要吃|吃|要)([\u4e00-\u9fa5]{1,8})", text):
-        constraints.avoid_ingredients.append(match.group(1))
+    for match in re.finditer(
+        r"(?:不要|别)(?:放|加|用)([\u4e00-\u9fa5、]{1,20})",
+        text,
+    ):
+        constraints.avoid_ingredients.extend(_split_ingredient_values(match.group(1)))
+
+    for match in re.finditer(r"(?:不|别)(?:喜欢吃|爱吃|想吃|要吃|吃|要)([\u4e00-\u9fa5、]{1,20})", text):
+        for ingredient in _split_ingredient_values(match.group(1)):
+            if ingredient.startswith(("放", "加", "用")):
+                ingredient = ingredient[1:]
+            constraints.avoid_ingredients.append(ingredient)
+
+    if re.search(r"(?:避免|不要|别)[^，,。；;\n]{0,12}(?:额外|添加)?糖", text):
+        constraints.avoid_ingredients.append("糖")
 
     minutes_match = re.search(r"(\d+)\s*分钟", text)
     if minutes_match:

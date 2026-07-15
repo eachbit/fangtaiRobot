@@ -3,8 +3,10 @@ from __future__ import annotations
 import unittest
 
 from app.agent import recommend_with_session
+from app.menu_revision import revise_menu
 from app.models import Constraints, Recipe
 from app.planner import plan_meal
+from app.recipe_features import analyze_recipe
 
 
 class MenuRevisionTests(unittest.TestCase):
@@ -181,6 +183,42 @@ class MenuRevisionTests(unittest.TestCase):
         )
 
         self.assertEqual(result["menu"], [])
+
+    def test_new_cooking_diversity_replaces_only_required_duplicate_methods(self) -> None:
+        steaming = [
+            Recipe(index, f"清蒸菜{index}", f"鸡肉{index} 100g", "清蒸至熟", ["晚餐"])
+            for index in range(1, 5)
+        ]
+        candidates = [
+            Recipe(5, "爆炒鸡丁", "鸡肉 100g", "炒熟", ["晚餐"]),
+            Recipe(6, "炖鸡块", "鸡肉 100g", "炖熟", ["晚餐"]),
+        ]
+        old_result = plan_meal(
+            steaming,
+            Constraints(meal="晚餐", requested_dish_count=4),
+            None,
+        )
+
+        result = revise_menu(
+            [*steaming, *candidates],
+            old_result,
+            Constraints(
+                meal="晚餐",
+                requested_dish_count=4,
+                minimum_cooking_methods=3,
+                raw_messages=["至少采用三种不同烹饪方式。"],
+            ),
+            None,
+        )
+        recipe_by_id = {item.id: item for item in [*steaming, *candidates]}
+        methods = {
+            analyze_recipe(recipe_by_id[item["id"]]).cooking_method
+            for item in result["menu"]
+        }
+
+        self.assertGreaterEqual(len(methods - {"unknown"}), 3)
+        self.assertEqual(len(result["changes"]["kept_dishes"]), 2)
+        self.assertEqual(result["changes"]["change_count"], 2)
 
 
 if __name__ == "__main__":
