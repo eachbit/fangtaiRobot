@@ -14,11 +14,17 @@ def plan_meal(
     *,
     excluded_recipe_ids: set[int] | None = None,
 ) -> dict:
-    ranked = rank_recipes(recipes, constraints, user)
+    menu_size = _menu_size(constraints)
+    candidate_limit = max(18, menu_size * 20)
+    ranked = rank_recipes(
+        recipes,
+        constraints,
+        user,
+        limit=candidate_limit,
+    )
     if excluded_recipe_ids:
         ranked = [item for item in ranked if item["recipe"].id not in excluded_recipe_ids]
     ranked = _rank_with_nutrition(ranked, constraints, user)
-    menu_size = _menu_size(constraints)
     selected = _diverse_select(ranked, menu_size)
     warnings = _collect_warnings(selected)
 

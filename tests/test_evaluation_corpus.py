@@ -10,6 +10,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.session_store import SessionStore
+from app.constraints import extract_constraints
+from app.food_terms import expand_terms
 from tests.evaluation.runner import EvaluationRunner
 from tests.evaluation.schemas import PRIMARY_BUCKETS, Scenario
 
@@ -40,18 +42,15 @@ PHASE1_KNOWN_GAP_BASELINE = frozenset(
     {
         ("adv-healthy-ratio-003", "structure.meat_count"),
         ("adv-healthy-ratio-003", "structure.vegetable_count"),
-        ("adv-healthy-cooking-diversity-004", "structure.cooking_diversity"),
         ("adv-healthy-add-vegetables-preserve-005", "structure.meat_count"),
         ("adv-healthy-add-vegetables-preserve-005", "structure.vegetable_count"),
         ("adv-healthy-multi-person-tradeoff-006", "dialogue.clarification"),
         ("adv-single-glucose-ratio-008", "structure.meat_count"),
         ("adv-single-glucose-ratio-008", "structure.vegetable_count"),
         ("adv-single-uric-allergy-cooking-009", "structure.cooking_diversity"),
-        ("adv-single-hypertension-metrics-tradeoff-010", "structure.cooking_diversity"),
         ("adv-single-ambiguous-vegetable-ratio-012", "dialogue.clarification"),
         ("adv-multi-hypertension-uric-ratio-014", "structure.meat_count"),
         ("adv-multi-hypertension-uric-ratio-014", "structure.vegetable_count"),
-        ("adv-multi-glucose-uric-cooking-015", "structure.cooking_diversity"),
         ("adv-multi-person-allergy-conflict-018", "dialogue.clarification"),
         ("adv-special-pregnancy-allergy-ratio-020", "structure.meat_count"),
         ("adv-special-pregnancy-allergy-ratio-020", "structure.vegetable_count"),
@@ -63,9 +62,20 @@ PHASE1_KNOWN_GAP_BASELINE = frozenset(
         ("adv-high-risk-explicit-ratio-026", "structure.vegetable_count"),
         ("adv-high-risk-explicit-ratio-026", "dialogue.clarification"),
         ("adv-high-risk-allergy-cooking-027", "dialogue.clarification"),
+        ("adv-high-risk-allergy-cooking-027", "structure.cooking_diversity"),
         ("adv-high-risk-minimal-revision-028", "dialogue.clarification"),
         ("adv-high-risk-negative-hypertension-029", "dialogue.clarification"),
         ("adv-high-risk-multi-person-nutrition-conflict-030", "dialogue.clarification"),
+    }
+)
+RETIRED_PHASE1_KNOWN_GAPS = frozenset(
+    {
+        ("adv-healthy-cooking-diversity-004", "structure.cooking_diversity"),
+        (
+            "adv-single-hypertension-metrics-tradeoff-010",
+            "structure.cooking_diversity",
+        ),
+        ("adv-multi-glucose-uric-cooking-015", "structure.cooking_diversity"),
     }
 )
 REQUIRED_DISCLOSED_GOALS = {
@@ -342,7 +352,7 @@ class EvaluationCorpusIntegrityTests(unittest.TestCase):
                 pairs.append(self.assert_known_gap_item(item, seed_ids))
 
         self.assertEqual(len(pairs), len(set(pairs)))
-        self.assertEqual(len(PHASE1_KNOWN_GAP_BASELINE), 28)
+        self.assertEqual(len(PHASE1_KNOWN_GAP_BASELINE), 26)
         self.assertEqual(frozenset(pairs), PHASE1_KNOWN_GAP_BASELINE)
 
     def test_known_gap_validation_rejects_empty_owner_phase(self) -> None:
@@ -395,10 +405,50 @@ class EvaluationCorpusIntegrityTests(unittest.TestCase):
         )
         self.assertEqual(missing_pairs, [])
 
+    def test_retired_known_gap_pairs_no_longer_block(self) -> None:
+        seeds = {
+            scenario.scenario_id: scenario
+            for scenario in load_scenario_directory(SEEDS_ROOT)
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            runner = EvaluationRunner(
+                Path(directory),
+                seed=20260715,
+                known_gaps_path=None,
+                commit_sha="retired-known-gap-evidence-test",
+            )
+            for scenario_id, retired_code in RETIRED_PHASE1_KNOWN_GAPS:
+                result, _, _, _ = runner._execute(
+                    seeds[scenario_id],
+                    seeds[scenario_id].messages,
+                )
+                self.assertNotIn(
+                    retired_code,
+                    {violation.code for violation in result.violations},
+                )
+
     def test_advanced_seed_labels_match_visible_request_semantics(self) -> None:
         for scenario in load_scenario_directory(SEEDS_ROOT):
             with self.subTest(scenario_id=scenario.scenario_id):
                 self.assertEqual(semantic_consistency_errors(scenario), ())
+
+    def test_seed_health_ground_truth_is_extractable_from_messages(self) -> None:
+        for scenario in load_scenario_directory(SEEDS_ROOT):
+            with self.subTest(scenario_id=scenario.scenario_id):
+                constraints = extract_constraints(list(scenario.messages))
+                inferred = constraints.inferred_profile
+                self.assertEqual(
+                    set(inferred.get("special_groups", [])),
+                    set(scenario.persona.special_groups),
+                )
+                self.assertEqual(
+                    set(expand_terms(inferred.get("allergens", []))),
+                    set(expand_terms(list(scenario.persona.allergens))),
+                )
+                self.assertEqual(
+                    set(inferred.get("health_goals", [])),
+                    set(scenario.persona.health_goals),
+                )
 
     def test_four_distinct_methods_requires_minimum_four(self) -> None:
         scenario = load_scenario_directory(SEEDS_ROOT)[0]
