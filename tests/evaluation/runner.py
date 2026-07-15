@@ -35,6 +35,29 @@ from tests.evaluation.schemas import (
 MODE_COUNTS = {"quick": 120, "daily": 2000, "deep": 10000}
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_CORPUS_ROOT = _REPO_ROOT / "tests" / "corpus"
+_CONTEXT_COLLECTION_FIELDS = (
+    ("health_goals", ("health_goals",), "health_goals", False),
+    ("allergens", ("allergens",), "allergens", True),
+    ("avoid_ingredients", ("avoid_ingredients",), None, True),
+    (
+        "inferred_profile.special_groups",
+        ("inferred_profile", "special_groups"),
+        "special_groups",
+        False,
+    ),
+    (
+        "inferred_profile.allergens",
+        ("inferred_profile", "allergens"),
+        "allergens",
+        True,
+    ),
+    (
+        "inferred_profile.health_goals",
+        ("inferred_profile", "health_goals"),
+        "health_goals",
+        False,
+    ),
+)
 
 
 def nearest_rank_percentile(values: Sequence[float], percentile: float) -> float:
@@ -128,18 +151,33 @@ def _violation_counts(results: Iterable[ScenarioResult]) -> dict[str, dict[str, 
     }
 
 
-def _constraint_terms(constraints: Mapping[str, Any]) -> set[str]:
-    values: list[str] = []
-    for key in ("allergens", "avoid_ingredients"):
-        item = constraints.get(key)
-        if type(item) is list:
-            values.extend(value for value in item if type(value) is str)
-    inferred = constraints.get("inferred_profile")
-    if type(inferred) is dict and type(inferred.get("allergens")) is list:
-        values.extend(
-            value for value in inferred["allergens"] if type(value) is str
+def _context_collection(
+    constraints: Mapping[str, Any], path: tuple[str, ...], expand: bool
+) -> set[str]:
+    value: object = constraints
+    for key in path:
+        if not isinstance(value, Mapping):
+            return set()
+        value = value.get(key)
+    if type(value) is not list:
+        return set()
+    values = [item for item in value if type(item) is str and item]
+    return set(expand_terms(values) if expand else values)
+
+
+def _persona_context(
+    scenario: Scenario, persona_field: str | None, expand: bool
+) -> set[str]:
+    if persona_field is None:
+        return set()
+    values = tuple(getattr(scenario.persona, persona_field))
+    if scenario.persona.source_user_id is None:
+        values = tuple(
+            value
+            for value in values
+            if any(value in message for message in scenario.messages)
         )
-    return set(expand_terms(values))
+    return set(expand_terms(list(values)) if expand else values)
 
 
 def _menu_id_set(value: object) -> set[int | str]:
@@ -261,19 +299,26 @@ def default_oracle_adapter(
         )
 
     first_constraints = intermediates[0]["constraints"]
-    required_terms = set(expand_terms(list(scenario.persona.allergens)))
-    required_terms.update(_constraint_terms(first_constraints))
+    required_by_field: list[
+        tuple[str, tuple[str, ...], bool, set[str]]
+    ] = []
+    for field, path, persona_field, expand in _CONTEXT_COLLECTION_FIELDS:
+        required = _context_collection(first_constraints, path, expand)
+        required.update(_persona_context(scenario, persona_field, expand))
+        required_by_field.append((field, path, expand, required))
+
     for turn, item in enumerate(intermediates):
-        actual_terms = _constraint_terms(item["constraints"])
-        missing = sorted(required_terms - actual_terms)
-        if missing:
-            result = _append_blocking_once(
-                result,
-                "dialogue.context_consistency",
-                "A persistent hard constraint was lost between dialogue turns.",
-                {"turn": turn, "missing_terms": missing},
-            )
-            break
+        for field, path, expand, required in required_by_field:
+            actual = _context_collection(item["constraints"], path, expand)
+            missing = sorted(required - actual)
+            if missing:
+                result = _append_blocking_once(
+                    result,
+                    "dialogue.context_consistency",
+                    "A persistent hard constraint was lost between dialogue turns.",
+                    {"turn": turn, "field": field, "missing": missing},
+                )
+                return result
     return result
 
 
@@ -415,6 +460,7 @@ class EvaluationRunner:
 
     def _load_scenarios(self, count: int) -> tuple[Scenario, ...]:
         loaded: list[Scenario] = []
+        loaded_by_source: dict[str, list[Scenario]] = {}
         sources: dict[str, dict[str, Any]] = {}
         for directory, holdout, source_name in self._corpus_directories():
             if not directory.is_dir():
@@ -422,6 +468,7 @@ class EvaluationRunner:
             for path in sorted(directory.rglob("*.json"), key=lambda item: item.as_posix()):
                 for scenario in self._load_file(path):
                     loaded.append(scenario)
+                    loaded_by_source.setdefault(source_name, []).append(scenario)
                     sources.setdefault(
                         scenario.scenario_id,
                         {
@@ -441,19 +488,34 @@ class EvaluationRunner:
         if duplicate_ids:
             raise ValueError(f"duplicate scenario_id values: {duplicate_ids}")
 
-        selected = loaded[:count]
-        remaining = count - len(selected)
-        if remaining > 0:
-            generated = self.generate_fn(self.seed, max(10, remaining))[:remaining]
-            selected.extend(generated)
-            for scenario in generated:
-                sources[scenario.scenario_id] = {
-                    "source": "generated",
-                    "holdout": False,
-                    "scenario_hash": _scenario_hash(scenario),
-                }
+        selected: list[Scenario] = []
+        source_offset = 0
+        loaded_limit = count - 1
+        source_groups = tuple(loaded_by_source.values())
+        while len(selected) < loaded_limit:
+            added = False
+            for group in source_groups:
+                if source_offset >= len(group):
+                    continue
+                selected.append(group[source_offset])
+                added = True
+                if len(selected) == loaded_limit:
+                    break
+            if not added:
+                break
+            source_offset += 1
 
-        ids = [item.scenario_id for item in selected]
+        remaining = count - len(selected)
+        generated = self.generate_fn(self.seed, max(10, remaining))[:remaining]
+        selected.extend(generated)
+        for scenario in generated:
+            sources[scenario.scenario_id] = {
+                "source": "generated",
+                "holdout": False,
+                "scenario_hash": _scenario_hash(scenario),
+            }
+
+        ids = [item.scenario_id for item in (*loaded, *generated)]
         duplicates = sorted(
             scenario_id
             for scenario_id, frequency in Counter(ids).items()
@@ -668,6 +730,11 @@ class EvaluationRunner:
             metrics=metrics,
             timings=summarize_timings(all_timings),
         )
+        failures_dir = self.output_dir / "failures"
+        failures_dir.mkdir(parents=True, exist_ok=True)
+        for path in failures_dir.glob("*.json"):
+            if path.is_file():
+                path.unlink()
         write_report(
             report,
             self.output_dir,

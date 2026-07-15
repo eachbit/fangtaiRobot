@@ -447,6 +447,78 @@ class EvaluationRunnerTests(unittest.TestCase):
     def test_mode_counts_are_exact(self) -> None:
         self.assertEqual(MODE_COUNTS, {"quick": 120, "daily": 2000, "deep": 10000})
 
+    def test_modes_preserve_every_nonempty_source_and_generated_cases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            holdout = root / "holdout"
+            source_directories = {
+                "regression": root / "regressions",
+                "seed": root / "seeds",
+                "validated_agent_candidate": (
+                    root / "agent_candidates" / "validated"
+                ),
+                "long_dialogue": root / "long_dialogue",
+                "holdout": holdout,
+            }
+            for source, source_dir in source_directories.items():
+                source_dir.mkdir(parents=True)
+                payload = []
+                for index, scenario in enumerate(self.scenarios(17, 12)):
+                    value = scenario.to_dict()
+                    value["scenario_id"] = f"{source}-{index:02d}"
+                    payload.append(value)
+                (source_dir / "cases.json").write_text(
+                    json.dumps(payload, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+
+            expected_by_mode = {
+                "quick": {"regression", "seed", "generated"},
+                "daily": {
+                    "regression",
+                    "seed",
+                    "validated_agent_candidate",
+                    "generated",
+                },
+                "deep": {
+                    "regression",
+                    "seed",
+                    "validated_agent_candidate",
+                    "long_dialogue",
+                    "holdout",
+                    "generated",
+                },
+            }
+            for mode, expected_sources in expected_by_mode.items():
+                with self.subTest(mode=mode):
+                    runner = self.build_runner(
+                        root / f"out-{mode}",
+                        mode=mode,
+                        corpus_root=root,
+                        include_holdout=True,
+                        holdout_dir=holdout,
+                    )
+                    report = runner.run_count(10)
+                    selected = tuple(runner.source_metadata.items())
+                    actual_sources = {
+                        metadata["source"] for _, metadata in selected
+                    }
+
+                    self.assertEqual(report.total, 10)
+                    self.assertEqual(actual_sources, expected_sources)
+                    self.assertEqual(len(selected), 10)
+                    self.assertIn("regression", actual_sources)
+
+                    repeated = self.build_runner(
+                        root / f"repeat-{mode}",
+                        mode=mode,
+                        corpus_root=root,
+                        include_holdout=True,
+                        holdout_dir=holdout,
+                    )
+                    repeated._load_scenarios(10)
+                    self.assertEqual(tuple(repeated.source_metadata.items()), selected)
+
     def test_run_count_writes_report_and_reproducible_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
@@ -466,6 +538,54 @@ class EvaluationRunnerTests(unittest.TestCase):
             summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary["seed"], 17)
             self.assertEqual(summary["commit_sha"], "fixedsha")
+
+    def test_run_count_replaces_only_direct_failure_json_artifacts(self) -> None:
+        failing_ids = {"case-1", "case-2"}
+
+        def evaluator(
+            scenario: Scenario,
+            response: object,
+            official_recipes: object,
+            *,
+            intermediates: tuple[dict[str, object], ...],
+            elapsed_ms: float,
+            known_gaps_path: Path | None,
+        ) -> ScenarioResult:
+            violations = (
+                (Violation("changing.block", "blocking", "failure", None),)
+                if scenario.scenario_id in failing_ids
+                else ()
+            )
+            return ScenarioResult(
+                scenario.scenario_id, not violations, violations, elapsed_ms
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            runner = self.build_runner(
+                output,
+                evaluate_fn=evaluator,
+                minimizer_max_attempts=1,
+            )
+            first = runner.run_count(10)
+            failures_dir = output / "failures"
+            self.assertEqual(len(first.failures), 2)
+            self.assertEqual(len(list(failures_dir.glob("*.json"))), 2)
+
+            keep_file = failures_dir / "user-notes.txt"
+            keep_file.write_text("keep", encoding="utf-8")
+            nested_file = failures_dir / "nested" / "user.json"
+            nested_file.parent.mkdir()
+            nested_file.write_text("{}", encoding="utf-8")
+            (failures_dir / "stale.json").write_text("{}", encoding="utf-8")
+
+            failing_ids.remove("case-2")
+            second = runner.run_count(10)
+
+            self.assertEqual(len(second.failures), 1)
+            self.assertEqual(len(list(failures_dir.glob("*.json"))), 1)
+            self.assertTrue(keep_file.is_file())
+            self.assertTrue(nested_file.is_file())
 
     def test_multi_turn_uses_delta_version_and_records_sanitized_intermediates(self) -> None:
         calls: list[tuple[list[str], dict[str, object]]] = []
@@ -779,6 +899,220 @@ class EvaluationRunnerTests(unittest.TestCase):
         )
 
         self.assertIn(
+            "dialogue.context_consistency", {item.code for item in result.violations}
+        )
+
+    def test_default_adapter_blocks_context_lost_mid_dialogue_then_restored(self) -> None:
+        scenario = Scenario(
+            "restored-context",
+            HealthPersona("p", "healthy"),
+            ("第一轮", "第二轮", "第三轮"),
+            MenuExpectation(dish_count=2),
+            7,
+            intent="relative_revision",
+            dialogue_mode="multi_turn",
+        )
+        cases = (
+            (
+                "health_goals",
+                {"health_goals": ["控糖"]},
+                {"health_goals": []},
+                {"health_goals": ["控糖"]},
+                "health_goals",
+                ["控糖"],
+            ),
+            (
+                "allergens",
+                {"allergens": ["花生"]},
+                {"allergens": []},
+                {"allergens": ["花生"]},
+                "allergens",
+                ["花生"],
+            ),
+            (
+                "avoid_ingredients",
+                {"avoid_ingredients": ["香菜"]},
+                {"avoid_ingredients": []},
+                {"avoid_ingredients": ["香菜"]},
+                "avoid_ingredients",
+                ["香菜"],
+            ),
+            (
+                "inferred special_groups",
+                {"inferred_profile": {"special_groups": ["孕妇"]}},
+                {"inferred_profile": {"special_groups": []}},
+                {"inferred_profile": {"special_groups": ["孕妇"]}},
+                "inferred_profile.special_groups",
+                ["孕妇"],
+            ),
+            (
+                "inferred allergens",
+                {"inferred_profile": {"allergens": ["花生"]}},
+                {"inferred_profile": {"allergens": []}},
+                {"inferred_profile": {"allergens": ["花生"]}},
+                "inferred_profile.allergens",
+                ["花生"],
+            ),
+            (
+                "inferred health_goals",
+                {"inferred_profile": {"health_goals": ["控糖"]}},
+                {"inferred_profile": {"health_goals": []}},
+                {"inferred_profile": {"health_goals": ["控糖"]}},
+                "inferred_profile.health_goals",
+                ["控糖"],
+            ),
+        )
+        base = ScenarioResult(scenario.scenario_id, True, (), 1.0)
+        for name, first, middle, last, field, missing in cases:
+            with self.subTest(field=name), patch(
+                "tests.evaluation.runner.evaluate_result", return_value=base
+            ):
+                result = default_oracle_adapter(
+                    scenario,
+                    self.response(3),
+                    {},
+                    intermediates=(
+                        {"turn": 0, "menu_ids": [1, 2], "constraints": first},
+                        {"turn": 1, "menu_ids": [1, 2], "constraints": middle},
+                        {"turn": 2, "menu_ids": [1, 2], "constraints": last},
+                    ),
+                    elapsed_ms=1.0,
+                    known_gaps_path=None,
+                )
+
+            matching = [
+                item
+                for item in result.violations
+                if item.code == "dialogue.context_consistency"
+            ]
+            self.assertEqual(len(matching), 1)
+            violation = matching[0]
+            self.assertEqual(
+                violation.evidence,
+                {"turn": 1, "field": field, "missing": tuple(missing)},
+            )
+
+    def test_default_adapter_does_not_promote_constraints_added_after_baseline(self) -> None:
+        scenario = Scenario(
+            "new-context",
+            HealthPersona("p", "healthy"),
+            ("第一轮", "新增控糖", "撤回控糖"),
+            MenuExpectation(dish_count=2),
+            7,
+            intent="relative_revision",
+            dialogue_mode="multi_turn",
+        )
+        base = ScenarioResult(scenario.scenario_id, True, (), 1.0)
+        with patch("tests.evaluation.runner.evaluate_result", return_value=base):
+            result = default_oracle_adapter(
+                scenario,
+                self.response(3),
+                {},
+                intermediates=(
+                    {"turn": 0, "menu_ids": [1, 2], "constraints": {}},
+                    {
+                        "turn": 1,
+                        "menu_ids": [1, 2],
+                        "constraints": {"health_goals": ["控糖"]},
+                    },
+                    {
+                        "turn": 2,
+                        "menu_ids": [1, 2],
+                        "constraints": {"health_goals": []},
+                    },
+                ),
+                elapsed_ms=1.0,
+                known_gaps_path=None,
+            )
+
+        self.assertNotIn(
+            "dialogue.context_consistency", {item.code for item in result.violations}
+        )
+
+    def test_default_adapter_uses_available_persona_ground_truth_as_context(self) -> None:
+        cases = (
+            (
+                "official special group",
+                HealthPersona(
+                    "official",
+                    "special_group",
+                    source_user_id=1,
+                    special_groups=("孕妇",),
+                ),
+                ("请推荐晚餐", "再少一道菜"),
+                "inferred_profile.special_groups",
+                ["孕妇"],
+            ),
+            (
+                "dialogue health goal",
+                HealthPersona("dialogue", "single_condition", health_goals=("控糖",)),
+                ("我需要控糖，请推荐晚餐", "再少一道菜"),
+                "health_goals",
+                ["控糖"],
+            ),
+        )
+        for name, persona, messages, field, missing in cases:
+            with self.subTest(case=name):
+                scenario = Scenario(
+                    f"persona-{persona.persona_id}",
+                    persona,
+                    messages,
+                    MenuExpectation(dish_count=2),
+                    7,
+                    intent="relative_revision",
+                    dialogue_mode="multi_turn",
+                )
+                base = ScenarioResult(scenario.scenario_id, True, (), 1.0)
+                with patch(
+                    "tests.evaluation.runner.evaluate_result", return_value=base
+                ):
+                    result = default_oracle_adapter(
+                        scenario,
+                        self.response(2),
+                        {},
+                        intermediates=(
+                            {"turn": 0, "menu_ids": [1, 2], "constraints": {}},
+                            {"turn": 1, "menu_ids": [1, 2], "constraints": {}},
+                        ),
+                        elapsed_ms=1.0,
+                        known_gaps_path=None,
+                    )
+
+                matching = [
+                    item
+                    for item in result.violations
+                    if item.code == "dialogue.context_consistency"
+                ]
+                self.assertEqual(len(matching), 1)
+                violation = matching[0]
+                self.assertEqual(
+                    violation.evidence,
+                    {"turn": 0, "field": field, "missing": tuple(missing)},
+                )
+
+        undisclosed = Scenario(
+            "undisclosed-persona",
+            HealthPersona("undisclosed", "single_condition", health_goals=("控糖",)),
+            ("请推荐晚餐", "再少一道菜"),
+            MenuExpectation(dish_count=2),
+            7,
+            intent="relative_revision",
+            dialogue_mode="multi_turn",
+        )
+        base = ScenarioResult(undisclosed.scenario_id, True, (), 1.0)
+        with patch("tests.evaluation.runner.evaluate_result", return_value=base):
+            result = default_oracle_adapter(
+                undisclosed,
+                self.response(2),
+                {},
+                intermediates=(
+                    {"turn": 0, "menu_ids": [1, 2], "constraints": {}},
+                    {"turn": 1, "menu_ids": [1, 2], "constraints": {}},
+                ),
+                elapsed_ms=1.0,
+                known_gaps_path=None,
+            )
+        self.assertNotIn(
             "dialogue.context_consistency", {item.code for item in result.violations}
         )
 
