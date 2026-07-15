@@ -1,0 +1,90 @@
+[
+  {
+    "scenario_id": "public-holdout-healthy-ratio-001",
+    "persona": {
+      "persona_id": "public-holdout-healthy-001",
+      "primary_bucket": "healthy",
+      "special_groups": [],
+      "allergens": [],
+      "health_goals": ["均衡营养"]
+    },
+    "messages": ["六道家常菜按一荤两素安排，也就是两荤四素。"],
+    "expectation": {"dish_count": 6, "meat_count": 2, "vegetable_count": 4},
+    "seed": 92001,
+    "intent": "structure_ratio",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "public-holdout-single-cooking-002",
+    "persona": {
+      "persona_id": "public-holdout-single-002",
+      "primary_bucket": "single_condition",
+      "special_groups": ["高血压"],
+      "allergens": [],
+      "health_goals": ["降压"]
+    },
+    "messages": ["高血压需要低盐，四道菜至少用三种不同烹饪方式。"],
+    "expectation": {"dish_count": 4, "minimum_cooking_methods": 3},
+    "seed": 92002,
+    "intent": "cooking_diversity",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "public-holdout-multi-preserve-003",
+    "persona": {
+      "persona_id": "public-holdout-multi-003",
+      "primary_bucket": "multi_condition",
+      "special_groups": ["高血糖", "高尿酸"],
+      "allergens": ["花生"],
+      "health_goals": ["控糖", "降尿酸"]
+    },
+    "messages": [
+      "高血糖、高尿酸并对花生过敏，先推荐四道菜。",
+      "只换第一道，其他菜和原约束都保留。"
+    ],
+    "expectation": {
+      "dish_count": 4,
+      "forbidden_terms": ["花生"],
+      "preserve_unaffected": true
+    },
+    "seed": 92003,
+    "intent": "relative_revision",
+    "dialogue_mode": "multi_turn"
+  },
+  {
+    "scenario_id": "public-holdout-special-allergy-004",
+    "persona": {
+      "persona_id": "public-holdout-special-004",
+      "primary_bucket": "special_group",
+      "pregnancy_week": "20周",
+      "special_groups": ["孕妇"],
+      "allergens": ["鸡蛋"],
+      "health_goals": ["补铁", "均衡营养"]
+    },
+    "messages": ["孕20周且鸡蛋过敏，推荐四道全熟菜，严格避开鸡蛋。"],
+    "expectation": {"dish_count": 4, "forbidden_terms": ["鸡蛋"]},
+    "seed": 92004,
+    "intent": "special_group_recommendation",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "public-holdout-high-risk-clarification-005",
+    "persona": {
+      "persona_id": "public-holdout-high-risk-005",
+      "primary_bucket": "high_risk",
+      "checkup_metrics": {
+        "fasting_glucose_mmol_l": 10.8,
+        "systolic_blood_pressure_mm_hg": 176,
+        "diastolic_blood_pressure_mm_hg": 106
+      },
+      "special_groups": ["高血压", "高血糖"],
+      "allergens": [],
+      "health_goals": ["降压", "控糖"]
+    },
+    "messages": ["血糖10.8、血压176/106，素菜多一点就好。请先澄清比例、用药和医嘱。"],
+    "expectation": {"clarification_required": true},
+    "seed": 92005,
+    "intent": "high_risk_clarification",
+    "dialogue_mode": "single_turn"
+  }
+]

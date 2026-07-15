@@ -1,0 +1,170 @@
+[
+  {
+    "scenario_id": "adv-healthy-ratio-003",
+    "violation_code": "structure.meat_count",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-healthy-ratio-003",
+    "violation_code": "structure.vegetable_count",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-healthy-cooking-diversity-004",
+    "violation_code": "structure.cooking_diversity",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-healthy-add-vegetables-preserve-005",
+    "violation_code": "structure.meat_count",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-healthy-add-vegetables-preserve-005",
+    "violation_code": "structure.vegetable_count",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-healthy-multi-person-tradeoff-006",
+    "violation_code": "dialogue.clarification",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-single-glucose-ratio-008",
+    "violation_code": "structure.meat_count",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-single-glucose-ratio-008",
+    "violation_code": "structure.vegetable_count",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-single-uric-allergy-cooking-009",
+    "violation_code": "structure.cooking_diversity",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-single-hypertension-metrics-tradeoff-010",
+    "violation_code": "structure.cooking_diversity",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-single-ambiguous-vegetable-ratio-012",
+    "violation_code": "dialogue.clarification",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-multi-hypertension-uric-ratio-014",
+    "violation_code": "structure.meat_count",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-multi-hypertension-uric-ratio-014",
+    "violation_code": "structure.vegetable_count",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-multi-glucose-uric-cooking-015",
+    "violation_code": "structure.cooking_diversity",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-multi-person-allergy-conflict-018",
+    "violation_code": "dialogue.clarification",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-special-pregnancy-allergy-ratio-020",
+    "violation_code": "structure.meat_count",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-special-pregnancy-allergy-ratio-020",
+    "violation_code": "structure.vegetable_count",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-special-pregnancy-add-vegetables-023",
+    "violation_code": "structure.meat_count",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-special-pregnancy-add-vegetables-023",
+    "violation_code": "structure.vegetable_count",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-special-pregnancy-family-conflict-024",
+    "violation_code": "dialogue.clarification",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-high-risk-metrics-clarification-025",
+    "violation_code": "dialogue.clarification",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-high-risk-explicit-ratio-026",
+    "violation_code": "structure.meat_count",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-high-risk-explicit-ratio-026",
+    "violation_code": "structure.vegetable_count",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-high-risk-explicit-ratio-026",
+    "violation_code": "dialogue.clarification",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-high-risk-allergy-cooking-027",
+    "violation_code": "dialogue.clarification",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-high-risk-minimal-revision-028",
+    "violation_code": "dialogue.clarification",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-high-risk-negative-hypertension-029",
+    "violation_code": "dialogue.clarification",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  },
+  {
+    "scenario_id": "adv-high-risk-multi-person-nutrition-conflict-030",
+    "violation_code": "dialogue.clarification",
+    "owner_phase": "phase2",
+    "expires_after_phase": "phase2"
+  }
+]
