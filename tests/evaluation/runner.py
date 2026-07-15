@@ -376,13 +376,25 @@ class EvaluationRunner:
         self.corpus_root = Path(corpus_root)
         self.include_holdout = include_holdout
         env_holdout = os.environ.get("EVAL_HOLDOUT_DIR")
-        self.holdout_dir = (
+        configured_holdout = (
             Path(holdout_dir)
             if holdout_dir is not None
             else Path(env_holdout)
             if env_holdout
             else None
         )
+        if include_holdout:
+            if configured_holdout is None:
+                raise ValueError(
+                    "include_holdout requires a holdout directory from holdout_dir "
+                    "or EVAL_HOLDOUT_DIR"
+                )
+            configured_holdout = configured_holdout.expanduser().resolve()
+            if not configured_holdout.exists() or not configured_holdout.is_dir():
+                raise ValueError(
+                    f"holdout directory must exist and be a directory: {configured_holdout}"
+                )
+        self.holdout_dir = configured_holdout
         self.commit_sha = commit_sha or self._read_commit_sha()
         self.minimizer_max_attempts = minimizer_max_attempts
         self.minimizer_confirmations = minimizer_confirmations
@@ -568,6 +580,71 @@ class EvaluationRunner:
             elapsed_ms,
         )
 
+    @staticmethod
+    def _session_contract_result(
+        scenario: Scenario, turn: int, reason: str, elapsed_ms: float
+    ) -> ScenarioResult:
+        return ScenarioResult(
+            scenario.scenario_id,
+            False,
+            (
+                Violation(
+                    "runner.session_contract",
+                    "blocking",
+                    "Multi-turn response violated the session contract.",
+                    {"turn": turn, "reason": reason},
+                ),
+            ),
+            elapsed_ms,
+        )
+
+    @staticmethod
+    def _session_contract_reason(
+        response: object,
+        *,
+        first_session_id: str | None,
+        previous_menu_version: int | None,
+    ) -> str | None:
+        if type(response) is not dict:
+            return "response_not_plain_dict"
+        session_id = response.get("session_id")
+        if type(session_id) is not str or not session_id:
+            return "missing_session_id"
+        menu_version = response.get("menu_version")
+        if type(menu_version) is not int or menu_version <= 0:
+            return "invalid_menu_version"
+        if first_session_id is not None and session_id != first_session_id:
+            return "session_id_changed"
+        if previous_menu_version is not None and menu_version <= previous_menu_version:
+            return "menu_version_not_increasing"
+        return None
+
+    @staticmethod
+    def _public_holdout_intermediates(
+        intermediates: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        public: list[dict[str, Any]] = []
+        for item in intermediates:
+            menu_ids = item.get("menu_ids")
+            public.append(
+                {
+                    "turn": item.get("turn"),
+                    "menu_count": len(menu_ids) if type(menu_ids) is list else 0,
+                    "elapsed_ms": item.get("elapsed_ms"),
+                }
+            )
+        return public
+
+    @staticmethod
+    def _public_holdout_violations(
+        violations: Sequence[Violation], scenario_hash: str
+    ) -> tuple[Violation, ...]:
+        evidence = {"holdout": True, "scenario_hash": scenario_hash}
+        return tuple(
+            Violation(item.code, item.severity, item.message, evidence)
+            for item in violations
+        )
+
     def _execute(
         self, scenario: Scenario, messages: tuple[str, ...]
     ) -> tuple[ScenarioResult, Mapping[str, Any], list[dict[str, Any]], list[float]]:
@@ -575,6 +652,8 @@ class EvaluationRunner:
         intermediates: list[dict[str, Any]] = []
         timings: list[float] = []
         turn = 0
+        first_session_id: str | None = None
+        previous_menu_version: int | None = None
         try:
             if scenario.dialogue_mode == "single_turn":
                 started = self.clock()
@@ -626,6 +705,30 @@ class EvaluationRunner:
                     elapsed = self._elapsed(started)
                     timings.append(elapsed)
                     intermediates.append(self._intermediate(turn, response, elapsed))
+                    needs_session = turn < len(messages) - 1 or turn > 0
+                    if needs_session:
+                        reason = self._session_contract_reason(
+                            response,
+                            first_session_id=first_session_id,
+                            previous_menu_version=previous_menu_version,
+                        )
+                        if reason is not None:
+                            return (
+                                self._session_contract_result(
+                                    scenario, turn, reason, elapsed
+                                ),
+                                {},
+                                intermediates,
+                                timings,
+                            )
+                        assert type(response) is dict
+                        session_id = response["session_id"]
+                        menu_version = response["menu_version"]
+                        assert type(session_id) is str
+                        assert type(menu_version) is int
+                        if first_session_id is None:
+                            first_session_id = session_id
+                        previous_menu_version = menu_version
 
             final_elapsed = timings[-1] if timings else 0.0
             replay_scenario = replace(scenario, messages=messages)
@@ -663,8 +766,12 @@ class EvaluationRunner:
             result, response, intermediates, timings = self._execute(
                 scenario, scenario.messages
             )
-            self.intermediates[scenario.scenario_id] = intermediates
-            results.append(result)
+            source = self.source_metadata[scenario.scenario_id]
+            self.intermediates[scenario.scenario_id] = (
+                self._public_holdout_intermediates(intermediates)
+                if source.get("holdout") is True
+                else intermediates
+            )
             reviewed_rows.append((scenario, response))
             all_timings.extend(timings)
             blocking = tuple(
@@ -673,9 +780,47 @@ class EvaluationRunner:
                 if violation.severity == "blocking"
             )
             if not blocking:
+                results.append(result)
                 continue
 
             target_code = blocking[0].code
+
+            confirmations: list[bool] = []
+            for _ in range(2):
+                replay_result, _, _, _ = self._execute(scenario, scenario.messages)
+                confirmations.append(
+                    any(
+                        violation.code == target_code
+                        and violation.severity == "blocking"
+                        for violation in replay_result.violations
+                    )
+                )
+            if not all(confirmations):
+                nonblocking = tuple(
+                    violation
+                    for violation in result.violations
+                    if violation.severity != "blocking"
+                )
+                unstable = Violation(
+                    "runner.unstable_failure",
+                    "soft_review",
+                    "Initial blocking failure was not stable across confirmations.",
+                    {
+                        "target_code": target_code,
+                        "confirmations": 1 + sum(confirmations),
+                    },
+                )
+                results.append(
+                    ScenarioResult(
+                        scenario.scenario_id,
+                        True,
+                        (*nonblocking, unstable),
+                        result.elapsed_ms,
+                    )
+                )
+                continue
+
+            results.append(result)
 
             def evaluate_codes(candidate: tuple[str, ...]) -> tuple[str, ...]:
                 replay_result, _, _, _ = self._execute(scenario, candidate)
@@ -696,14 +841,21 @@ class EvaluationRunner:
                 "attempts": minimized.attempts,
                 "reached_cap": minimized.reached_cap,
             }
+            holdout = source.get("holdout") is True
             failures.append(
                 FailureRecord(
                     scenario.scenario_id,
                     self.seed,
                     self.commit_sha,
-                    scenario.messages,
-                    minimized.messages,
-                    result.violations,
+                    () if holdout else scenario.messages,
+                    () if holdout else minimized.messages,
+                    (
+                        self._public_holdout_violations(
+                            result.violations, str(source["scenario_hash"])
+                        )
+                        if holdout
+                        else result.violations
+                    ),
                     result.elapsed_ms,
                 )
             )

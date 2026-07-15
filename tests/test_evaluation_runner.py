@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -539,6 +540,111 @@ class EvaluationRunnerTests(unittest.TestCase):
             self.assertEqual(summary["seed"], 17)
             self.assertEqual(summary["commit_sha"], "fixedsha")
 
+    def test_initial_blocking_failure_must_repeat_twice_before_recording(self) -> None:
+        calls: dict[str, int] = {}
+
+        def unstable_evaluator(
+            scenario: Scenario,
+            response: object,
+            official_recipes: object,
+            *,
+            intermediates: tuple[dict[str, object], ...],
+            elapsed_ms: float,
+            known_gaps_path: Path | None,
+        ) -> ScenarioResult:
+            calls[scenario.scenario_id] = calls.get(scenario.scenario_id, 0) + 1
+            unstable = scenario.scenario_id == "case-1" and calls[scenario.scenario_id] != 2
+            violations = (
+                (Violation("flaky.block", "blocking", "flaky", None),)
+                if unstable
+                else ()
+            )
+            return ScenarioResult(
+                scenario.scenario_id,
+                not violations,
+                violations,
+                elapsed_ms,
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            report = self.build_runner(
+                Path(directory), evaluate_fn=unstable_evaluator
+            ).run_count(10)
+
+        self.assertEqual(calls["case-1"], 3)
+        self.assertEqual(report.passed, 10)
+        self.assertEqual(report.failures, ())
+        self.assertEqual(
+            report.metrics["violation_counts"]["by_code"],
+            {"runner.unstable_failure": 1},
+        )
+
+    def test_three_matching_blocking_evaluations_create_failure(self) -> None:
+        calls: dict[str, int] = {}
+
+        def stable_evaluator(
+            scenario: Scenario,
+            response: object,
+            official_recipes: object,
+            *,
+            intermediates: tuple[dict[str, object], ...],
+            elapsed_ms: float,
+            known_gaps_path: Path | None,
+        ) -> ScenarioResult:
+            calls[scenario.scenario_id] = calls.get(scenario.scenario_id, 0) + 1
+            violations = (
+                (Violation("stable.block", "blocking", "stable", None),)
+                if scenario.scenario_id == "case-1"
+                else ()
+            )
+            return ScenarioResult(
+                scenario.scenario_id,
+                not violations,
+                violations,
+                elapsed_ms,
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            report = self.build_runner(
+                Path(directory),
+                evaluate_fn=stable_evaluator,
+                minimizer_max_attempts=0,
+            ).run_count(10)
+
+        self.assertEqual(calls["case-1"], 3)
+        self.assertEqual(report.passed, 9)
+        self.assertEqual(len(report.failures), 1)
+
+    def test_transient_evaluator_exception_is_soft_review_after_confirmation(self) -> None:
+        calls: dict[str, int] = {}
+
+        def transient_exception(
+            scenario: Scenario,
+            response: object,
+            official_recipes: object,
+            *,
+            intermediates: tuple[dict[str, object], ...],
+            elapsed_ms: float,
+            known_gaps_path: Path | None,
+        ) -> ScenarioResult:
+            calls[scenario.scenario_id] = calls.get(scenario.scenario_id, 0) + 1
+            if scenario.scenario_id == "case-1" and calls[scenario.scenario_id] == 1:
+                raise RuntimeError("transient")
+            return ScenarioResult(scenario.scenario_id, True, (), elapsed_ms)
+
+        with tempfile.TemporaryDirectory() as directory:
+            report = self.build_runner(
+                Path(directory), evaluate_fn=transient_exception
+            ).run_count(10)
+
+        self.assertEqual(calls["case-1"], 3)
+        self.assertEqual(report.passed, 10)
+        self.assertEqual(report.failures, ())
+        self.assertEqual(
+            report.metrics["violation_counts"]["by_code"],
+            {"runner.unstable_failure": 1},
+        )
+
     def test_run_count_replaces_only_direct_failure_json_artifacts(self) -> None:
         failing_ids = {"case-1", "case-2"}
 
@@ -631,6 +737,83 @@ class EvaluationRunnerTests(unittest.TestCase):
             self.assertEqual(len(received_evidence), 1)
             self.assertIsInstance(received_evidence[0], tuple)
             self.assertEqual([item["turn"] for item in received_evidence[0]], [0, 1])
+
+    def test_multi_turn_stops_when_initial_session_id_is_missing(self) -> None:
+        calls = 0
+
+        def session(
+            user_id: int | None, messages: list[str], **kwargs: object
+        ) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            response = self.response()
+            del response["session_id"]
+            return response
+
+        with tempfile.TemporaryDirectory() as directory:
+            runner = self.build_runner(Path(directory), session_fn=session)
+            scenario = self.scenarios(17, 10)[0]
+            result, _, intermediates, _ = runner._execute(scenario, scenario.messages)
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(len(intermediates), 1)
+        self.assertEqual(result.violations[0].code, "runner.session_contract")
+        self.assertEqual(
+            dict(result.violations[0].evidence or {}),
+            {"turn": 0, "reason": "missing_session_id"},
+        )
+
+    def test_multi_turn_stops_when_session_id_changes(self) -> None:
+        calls = 0
+
+        def session(
+            user_id: int | None, messages: list[str], **kwargs: object
+        ) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            response = self.response(calls)
+            response["session_id"] = "first" if calls == 1 else "changed"
+            return response
+
+        with tempfile.TemporaryDirectory() as directory:
+            runner = self.build_runner(Path(directory), session_fn=session)
+            scenario = self.scenarios(17, 10)[0]
+            result, _, intermediates, _ = runner._execute(scenario, scenario.messages)
+
+        self.assertEqual(calls, 2)
+        self.assertEqual(len(intermediates), 2)
+        self.assertEqual(
+            [item.code for item in result.violations], ["runner.session_contract"]
+        )
+        self.assertEqual(
+            dict(result.violations[0].evidence or {}),
+            {"turn": 1, "reason": "session_id_changed"},
+        )
+
+    def test_multi_turn_stops_when_menu_version_does_not_increase(self) -> None:
+        calls = 0
+
+        def session(
+            user_id: int | None, messages: list[str], **kwargs: object
+        ) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            return self.response(1)
+
+        with tempfile.TemporaryDirectory() as directory:
+            runner = self.build_runner(Path(directory), session_fn=session)
+            scenario = self.scenarios(17, 10)[0]
+            result, _, intermediates, _ = runner._execute(scenario, scenario.messages)
+
+        self.assertEqual(calls, 2)
+        self.assertEqual(len(intermediates), 2)
+        self.assertEqual(
+            [item.code for item in result.violations], ["runner.session_contract"]
+        )
+        self.assertEqual(
+            dict(result.violations[0].evidence or {}),
+            {"turn": 1, "reason": "menu_version_not_increasing"},
+        )
 
     def test_default_adapter_blocks_false_minimal_change_claim_from_turn_evidence(self) -> None:
         scenario = Scenario(
@@ -1172,7 +1355,7 @@ class EvaluationRunnerTests(unittest.TestCase):
                 minimizer_max_attempts=3,
             ).run_count(10)
 
-        self.assertEqual(received_turn_counts, [2, 1, 1, 1])
+        self.assertEqual(received_turn_counts, [2, 2, 2, 1, 1, 1])
 
     def test_exception_is_isolated_as_stable_blocking_violation(self) -> None:
         def recommend(user_id: int | None, messages: list[str]) -> dict[str, object]:
@@ -1265,6 +1448,129 @@ class EvaluationRunnerTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "duplicate scenario_id"):
                 runner.run_count(10)
+
+    def test_include_holdout_requires_explicit_or_environment_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict(os.environ, {"EVAL_HOLDOUT_DIR": ""}):
+                with self.assertRaisesRegex(ValueError, "holdout directory"):
+                    self.build_runner(
+                        Path(directory) / "out",
+                        mode="deep",
+                        include_holdout=True,
+                    )
+
+    def test_include_holdout_rejects_missing_and_file_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            file_path = root / "holdout.json"
+            file_path.write_text("{}", encoding="utf-8")
+            for path in (root / "missing", file_path):
+                with self.subTest(path=path):
+                    with self.assertRaisesRegex(ValueError, "holdout directory"):
+                        self.build_runner(
+                            root / "out",
+                            mode="deep",
+                            include_holdout=True,
+                            holdout_dir=path,
+                        )
+
+    def test_excluded_holdout_does_not_validate_configured_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            file_path = root / "holdout.json"
+            file_path.write_text("{}", encoding="utf-8")
+
+            runner = self.build_runner(
+                root / "out",
+                include_holdout=False,
+                holdout_dir=file_path,
+            )
+
+        self.assertFalse(runner.include_holdout)
+
+    def test_holdout_failure_is_private_in_returned_report_and_intermediates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            holdout = root / "holdout"
+            holdout.mkdir()
+            private = self.scenarios(17, 10)[1].to_dict()
+            private["scenario_id"] = "private-case"
+            private["messages"] = ["private-message-never-return"]
+            private["persona"]["allergens"] = ["private-expected-never-return"]
+            (holdout / "private.json").write_text(
+                json.dumps(private, ensure_ascii=False), encoding="utf-8"
+            )
+
+            def private_response(
+                user_id: int | None, messages: list[str]
+            ) -> dict[str, object]:
+                response = self.response()
+                response["constraints"] = {"private-constraint-never-return": True}
+                return response
+
+            def fail_private(
+                scenario: Scenario,
+                response: object,
+                official_recipes: object,
+                *,
+                intermediates: tuple[dict[str, object], ...],
+                elapsed_ms: float,
+                known_gaps_path: Path | None,
+            ) -> ScenarioResult:
+                violations = (
+                    (
+                        Violation(
+                            "private.block",
+                            "blocking",
+                            "private failure",
+                            {"private-evidence-never-return": True},
+                        ),
+                    )
+                    if scenario.scenario_id == "private-case"
+                    else ()
+                )
+                return ScenarioResult(
+                    scenario.scenario_id, not violations, violations, elapsed_ms
+                )
+
+            runner = self.build_runner(
+                root / "out",
+                mode="deep",
+                include_holdout=True,
+                holdout_dir=holdout,
+                recommend_fn=private_response,
+                evaluate_fn=fail_private,
+                minimizer_max_attempts=0,
+            )
+            report = runner.run_count(10)
+
+            self.assertEqual(len(report.failures), 1)
+            failure = report.failures[0]
+            self.assertEqual(failure.original_messages, ())
+            self.assertEqual(failure.minimized_messages, ())
+            self.assertEqual(
+                dict(failure.violations[0].evidence or {}),
+                {
+                    "holdout": True,
+                    "scenario_hash": runner.source_metadata["private-case"]["scenario_hash"],
+                },
+            )
+            public_text = json.dumps(report.to_dict(), ensure_ascii=False)
+            intermediate_text = json.dumps(
+                runner.intermediates["private-case"], ensure_ascii=False
+            )
+            for secret in (
+                "private-message-never-return",
+                "private-expected-never-return",
+                "private-evidence-never-return",
+                "private-constraint-never-return",
+            ):
+                self.assertNotIn(secret, public_text)
+                self.assertNotIn(secret, intermediate_text)
+            self.assertEqual(
+                set(runner.intermediates["private-case"][0]),
+                {"turn", "menu_count", "elapsed_ms"},
+            )
 
     def test_holdout_requires_strict_schema_and_never_leaks_messages(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
