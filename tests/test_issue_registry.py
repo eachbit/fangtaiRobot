@@ -4,7 +4,6 @@ import json
 import os
 import subprocess
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -107,10 +106,6 @@ class IssueRegistryTests(unittest.TestCase):
                 check=False,
             )
             return result.returncode == 0
-
-    @staticmethod
-    def lock_payload(pid: int, token: str) -> str:
-        return json.dumps({"pid": pid, "token": token}, sort_keys=True) + "\n"
 
     @staticmethod
     def completed_cycle(issue_ids: list[str] | None = None) -> dict[str, object]:
@@ -471,45 +466,62 @@ class IssueRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "schema version"):
             registry.load(issue_id)
 
-    def test_stale_lock_is_removed_before_ingest(self) -> None:
-        registry = IssueRegistry(self.root)
-        registry._lock_path.write_text(
-            self.lock_payload(2_147_483_647, "dead-owner-token"),
-            encoding="utf-8",
-        )
-        stale_time = time.time() - 3600
-        os.utime(registry._lock_path, (stale_time, stale_time))
+    def test_second_instance_times_out_while_first_holds_lock(self) -> None:
+        first = IssueRegistry(self.root)
+        second = IssueRegistry(self.root)
 
-        issue_id = self.ingest_one(registry)
+        with first._locked():
+            with mock.patch.object(issue_registry.time, "sleep", return_value=None):
+                with self.assertRaises(TimeoutError):
+                    with second._locked():
+                        self.fail("second registry unexpectedly acquired the lock")
 
-        self.assertTrue(self.issue_path(self.root, issue_id).is_file())
-        self.assertFalse(registry._lock_path.exists())
+    def test_second_instance_acquires_after_first_releases_persistent_lock(self) -> None:
+        first = IssueRegistry(self.root)
+        second = IssueRegistry(self.root)
 
-    def test_active_stale_lock_is_not_removed(self) -> None:
-        registry = IssueRegistry(self.root)
-        lock_content = self.lock_payload(os.getpid(), "active-owner-token")
-        registry._lock_path.write_text(lock_content, encoding="utf-8")
-        stale_time = time.time() - 3600
-        os.utime(registry._lock_path, (stale_time, stale_time))
+        with first._locked():
+            pass
+
+        self.assertTrue(first._lock_path.is_file())
+        with second._locked():
+            self.assertTrue(second._lock_path.is_file())
+
+    def test_preexisting_empty_persistent_lock_file_can_be_acquired(self) -> None:
+        issues_root = self.root / "issues"
+        issues_root.mkdir(parents=True)
+        lock_path = issues_root / ".registry.lock"
+        lock_path.touch()
 
         with mock.patch.object(issue_registry.time, "sleep", return_value=None):
-            with self.assertRaises(TimeoutError):
-                self.ingest_one(registry)
+            registry = IssueRegistry(self.root)
 
-        self.assertEqual(registry._lock_path.read_text(encoding="utf-8"), lock_content)
-
-    def test_lock_release_does_not_remove_changed_owner_token(self) -> None:
-        registry = IssueRegistry(self.root)
-
+        self.assertGreaterEqual(lock_path.stat().st_size, 1)
         with registry._locked():
-            owner = json.loads(registry._lock_path.read_text(encoding="utf-8"))
-            self.assertEqual(owner["pid"], os.getpid())
-            self.assertRegex(owner["token"], r"\A[0-9a-f]{32}\Z")
-            changed = self.lock_payload(os.getpid(), "replacement-owner-token")
-            registry._lock_path.write_text(changed, encoding="utf-8")
+            pass
 
-        self.assertEqual(registry._lock_path.read_text(encoding="utf-8"), changed)
-        registry._lock_path.unlink()
+    def test_closing_held_lock_descriptor_allows_reacquisition(self) -> None:
+        first = IssueRegistry(self.root)
+        second = IssueRegistry(self.root)
+        opened_descriptors: list[int] = []
+        real_open = os.open
+
+        def capture_open(*args: object, **kwargs: object) -> int:
+            descriptor = real_open(*args, **kwargs)
+            opened_descriptors.append(descriptor)
+            return descriptor
+
+        lock_context = first._locked()
+        with mock.patch.object(issue_registry.os, "open", side_effect=capture_open):
+            lock_context.__enter__()
+        descriptor = opened_descriptors[-1]
+        os.fstat(descriptor)
+        os.close(descriptor)
+        try:
+            with second._locked():
+                pass
+        finally:
+            lock_context.__exit__(None, None, None)
 
     def test_status_transitions_accept_only_the_defined_flow(self) -> None:
         registry = IssueRegistry(self.root)

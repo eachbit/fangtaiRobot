@@ -6,7 +6,6 @@ import json
 import math
 import os
 import re
-import secrets
 import stat
 import tempfile
 import time
@@ -26,7 +25,6 @@ HISTORY_LIMIT = 256
 _SCHEMA_VERSION = 1
 _LOCK_RETRIES = 100
 _LOCK_RETRY_DELAY_SECONDS = 0.01
-_STALE_LOCK_SECONDS = 30.0
 _PUBLIC_FIELDS = frozenset(
     {
         "schema_version",
@@ -327,118 +325,93 @@ class IssueRegistry:
     @contextmanager
     def _locked(self) -> Iterator[None]:
         self._assert_layout()
-        descriptor: int | None = None
-        token = secrets.token_hex(16)
-        for attempt in range(_LOCK_RETRIES):
-            try:
-                descriptor = os.open(
-                    self._lock_path,
-                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                    0o600,
-                )
-            except FileExistsError:
-                if _is_link_or_reparse_point(self._lock_path):
-                    raise ValueError("registry lock must not be a link or reparse point")
+        descriptor = self._open_lock_descriptor()
+        acquired = False
+        try:
+            for attempt in range(_LOCK_RETRIES):
                 try:
-                    stale = time.time() - self._lock_path.stat().st_mtime > _STALE_LOCK_SECONDS
-                except FileNotFoundError:
-                    continue
-                if stale:
-                    owner = self._read_lock_owner()
-                    if owner is not None and not self._process_exists(owner[0]):
-                        if self._unlink_lock_if_token(owner[1]):
-                            continue
-                if attempt + 1 == _LOCK_RETRIES:
-                    raise TimeoutError("timed out waiting for issue registry lock")
-                time.sleep(_LOCK_RETRY_DELAY_SECONDS)
-            else:
-                break
-        if descriptor is None:
-            raise TimeoutError("timed out waiting for issue registry lock")
-        try:
-            payload = (
-                json.dumps(
-                    {"pid": os.getpid(), "token": token},
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
-                + "\n"
-            ).encode("ascii")
-            written = 0
-            while written < len(payload):
-                written += os.write(descriptor, payload[written:])
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        try:
+                    self._acquire_advisory_lock(descriptor)
+                except OSError as error:
+                    if not self._is_lock_contention(error):
+                        raise
+                    if attempt + 1 == _LOCK_RETRIES:
+                        raise TimeoutError(
+                            "timed out waiting for issue registry lock"
+                        ) from error
+                    time.sleep(_LOCK_RETRY_DELAY_SECONDS)
+                else:
+                    acquired = True
+                    break
+            if not acquired:
+                raise TimeoutError("timed out waiting for issue registry lock")
             yield
         finally:
-            self._unlink_lock_if_token(token)
+            if acquired:
+                try:
+                    self._release_advisory_lock(descriptor)
+                except OSError as error:
+                    if not self._is_closed_descriptor(error):
+                        raise
+            try:
+                os.close(descriptor)
+            except OSError as error:
+                if not self._is_closed_descriptor(error):
+                    raise
 
-    def _read_lock_owner(self) -> tuple[int, str] | None:
-        if _is_link_or_reparse_point(self._lock_path):
-            return None
+    def _open_lock_descriptor(self) -> int:
+        flags = os.O_CREAT | os.O_RDWR
+        flags |= getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(self._lock_path, flags, 0o600)
         try:
-            value = _strict_json_object_from_path(self._lock_path)
-        except (OSError, UnicodeError, ValueError):
-            return None
-        if frozenset(value) != {"pid", "token"}:
-            return None
-        pid = value["pid"]
-        token = value["token"]
-        if type(pid) is not int or pid <= 0:
-            return None
-        if type(token) is not str or not token:
-            return None
-        return pid, token
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("registry lock must be a regular file")
+            if metadata.st_size < 1:
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                os.write(descriptor, b"\0")
+                os.fsync(descriptor)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            return descriptor
+        except Exception:
+            os.close(descriptor)
+            raise
 
     @staticmethod
-    def _process_exists(pid: int) -> bool:
+    def _acquire_advisory_lock(descriptor: int) -> None:
         if os.name == "nt":
-            import ctypes
-            from ctypes import wintypes
+            import msvcrt
 
-            process_query_limited_information = 0x1000
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            open_process = kernel32.OpenProcess
-            open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-            open_process.restype = wintypes.HANDLE
-            close_handle = kernel32.CloseHandle
-            close_handle.argtypes = [wintypes.HANDLE]
-            close_handle.restype = wintypes.BOOL
-            handle = open_process(
-                process_query_limited_information,
-                False,
-                pid,
-            )
-            if handle:
-                close_handle(handle)
-                return True
-            error = ctypes.get_last_error()
-            if error == 87:
-                return False
-            return True
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        except OSError as error:
-            if error.errno == errno.ESRCH:
-                return False
-            return True
-        return True
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            return
+        import fcntl
 
-    def _unlink_lock_if_token(self, token: str) -> bool:
-        owner = self._read_lock_owner()
-        if owner is None or owner[1] != token:
-            return False
-        try:
-            self._lock_path.unlink()
-        except FileNotFoundError:
-            return False
-        return True
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    @staticmethod
+    def _release_advisory_lock(descriptor: int) -> None:
+        if os.name == "nt":
+            import msvcrt
+
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            return
+        import fcntl
+
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+    @staticmethod
+    def _is_lock_contention(error: OSError) -> bool:
+        return error.errno in {
+            errno.EACCES,
+            errno.EAGAIN,
+            getattr(errno, "EDEADLK", errno.EACCES),
+        }
+
+    @staticmethod
+    def _is_closed_descriptor(error: OSError) -> bool:
+        return error.errno == errno.EBADF or getattr(error, "winerror", None) == 6
 
     def _issue_path(self, issue_id: str, status: str) -> Path:
         _validate_issue_id(issue_id)
