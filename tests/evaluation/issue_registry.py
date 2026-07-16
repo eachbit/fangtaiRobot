@@ -694,7 +694,59 @@ class IssueRegistry:
             result.append((relative_path, path, before))
         if "index.json" not in seen:
             raise ValueError("transaction journal must include index.json")
+        self._validate_transaction_semantics(result)
         return result
+
+    @staticmethod
+    def _validate_transaction_semantics(
+        entries: list[tuple[str, Path, dict[str, Any] | None]],
+    ) -> None:
+        index_before = next(
+            before
+            for relative_path, _, before in entries
+            if relative_path == "index.json"
+        )
+        if index_before is None:
+            raise ValueError(
+                "transaction journal index.json before-image must not be null"
+            )
+        old_issues = index_before["issues"]
+        grouped: dict[str, list[tuple[str, dict[str, Any] | None]]] = {}
+        for relative_path, _, before in entries:
+            if relative_path == "index.json":
+                continue
+            _, filename = relative_path.split("/", 1)
+            issue_id = filename.removesuffix(".json")
+            grouped.setdefault(issue_id, []).append((relative_path, before))
+
+        for issue_id, issue_entries in grouped.items():
+            old_entry = old_issues.get(issue_id)
+            if old_entry is None:
+                if any(before is not None for _, before in issue_entries):
+                    raise ValueError(
+                        "transaction journal contains a non-null issue before-image "
+                        "that is absent from the old index"
+                    )
+                continue
+
+            expected_path = old_entry["path"]
+            expected = [
+                before
+                for relative_path, before in issue_entries
+                if relative_path == expected_path
+            ]
+            if len(expected) != 1 or expected[0] is None:
+                raise ValueError(
+                    "transaction journal must contain the old index issue path "
+                    "with a non-null before-image"
+                )
+            if any(
+                relative_path != expected_path and before is not None
+                for relative_path, before in issue_entries
+            ):
+                raise ValueError(
+                    "transaction journal issue path or status conflicts with the old index"
+                )
 
     def _read_transaction_snapshot(
         self,

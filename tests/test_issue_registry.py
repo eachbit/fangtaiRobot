@@ -608,6 +608,115 @@ class IssueRegistryTests(unittest.TestCase):
         self.assertEqual(recovered.load(issue_id)["status"], "open")
         self.assertTrue(source.is_file())
         self.assertFalse(destination.exists())
+        self.assertFalse(recovered._journal_path.exists())
+
+    def test_journal_null_index_before_is_rejected_without_modifying_files(self) -> None:
+        registry = IssueRegistry(self.root)
+        issue_id = self.ingest_one(registry)
+        issue_path = self.issue_path(self.root, issue_id)
+        index_path = self.root / "issues" / "index.json"
+        old_issue = issue_path.read_bytes()
+        old_index = index_path.read_bytes()
+        issue_registry._atomic_write_json(
+            registry._journal_path,
+            {
+                "schema_version": 1,
+                "files": [
+                    {"path": "index.json", "before": None},
+                    {"path": f"open/{issue_id}.json", "before": None},
+                ],
+            },
+        )
+
+        with self.assertRaisesRegex(ValueError, "transaction journal"):
+            IssueRegistry(self.root)
+
+        self.assertEqual(index_path.read_bytes(), old_index)
+        self.assertEqual(issue_path.read_bytes(), old_issue)
+        self.assertTrue(registry._journal_path.is_file())
+
+    def test_journal_index_reference_requires_non_null_issue_before(self) -> None:
+        registry = IssueRegistry(self.root)
+        issue_id = self.ingest_one(registry)
+        issue_path = self.issue_path(self.root, issue_id)
+        index_path = self.root / "issues" / "index.json"
+        old_issue = issue_path.read_bytes()
+        old_index = index_path.read_bytes()
+        index = json.loads(old_index)
+        issue_registry._atomic_write_json(
+            registry._journal_path,
+            {
+                "schema_version": 1,
+                "files": [
+                    {"path": "index.json", "before": index},
+                    {"path": f"open/{issue_id}.json", "before": None},
+                ],
+            },
+        )
+
+        with self.assertRaisesRegex(ValueError, "transaction journal"):
+            IssueRegistry(self.root)
+
+        self.assertEqual(index_path.read_bytes(), old_index)
+        self.assertEqual(issue_path.read_bytes(), old_issue)
+        self.assertTrue(registry._journal_path.is_file())
+
+    def test_journal_non_null_issue_before_must_be_referenced_by_old_index(self) -> None:
+        registry = IssueRegistry(self.root)
+        issue_id = self.ingest_one(registry)
+        issue_path = self.issue_path(self.root, issue_id)
+        index_path = self.root / "issues" / "index.json"
+        old_issue = issue_path.read_bytes()
+        old_index = index_path.read_bytes()
+        issue = json.loads(old_issue)
+        index = json.loads(old_index)
+        index["issues"].pop(issue_id)
+        issue_registry._atomic_write_json(
+            registry._journal_path,
+            {
+                "schema_version": 1,
+                "files": [
+                    {"path": "index.json", "before": index},
+                    {"path": f"open/{issue_id}.json", "before": issue},
+                ],
+            },
+        )
+
+        with self.assertRaisesRegex(ValueError, "transaction journal"):
+            IssueRegistry(self.root)
+
+        self.assertEqual(index_path.read_bytes(), old_index)
+        self.assertEqual(issue_path.read_bytes(), old_issue)
+        self.assertTrue(registry._journal_path.is_file())
+
+    def test_journal_issue_status_path_must_match_old_index(self) -> None:
+        registry = IssueRegistry(self.root)
+        issue_id = self.ingest_one(registry)
+        source = self.issue_path(self.root, issue_id, "open")
+        destination = self.issue_path(self.root, issue_id, "verifying")
+        index_path = self.root / "issues" / "index.json"
+        old_issue = source.read_bytes()
+        old_index = index_path.read_bytes()
+        moved = json.loads(old_issue)
+        moved["status"] = "verifying"
+        issue_registry._atomic_write_json(
+            registry._journal_path,
+            {
+                "schema_version": 1,
+                "files": [
+                    {"path": "index.json", "before": json.loads(old_index)},
+                    {"path": f"verifying/{issue_id}.json", "before": moved},
+                ],
+            },
+        )
+
+        with self.assertRaisesRegex(ValueError, "transaction journal"):
+            IssueRegistry(self.root)
+
+        self.assertEqual(index_path.read_bytes(), old_index)
+        self.assertEqual(source.read_bytes(), old_issue)
+        self.assertFalse(destination.exists())
+        self.assertTrue(registry._journal_path.is_file())
 
     def test_load_uses_strict_json_and_returns_a_defensive_object(self) -> None:
         registry = IssueRegistry(self.root)
