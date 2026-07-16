@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -137,6 +138,246 @@ class IssueRegistryTests(unittest.TestCase):
         self.assertEqual(HISTORY_LIMIT, 256)
         self.assertIsNotNone(ISSUE_ID_PATTERN.fullmatch("issue-0123456789abcdef01234567"))
         self.assertIsNone(ISSUE_ID_PATTERN.fullmatch("issue-0123456789ABCDEF01234567"))
+
+    def test_observation_id_is_idempotent_and_marker_contains_no_private_data(self) -> None:
+        secret = "PRIVATE-OBSERVATION-CONTENT"
+        registry = IssueRegistry(self.root)
+        failure = self.failure(
+            original_messages=(secret,),
+            minimized_messages=(secret,),
+            evidence={"private": secret},
+        )
+        observation_id = "cycle-a:round:0"
+
+        first_ids = registry.ingest(
+            self.report(failure),
+            {failure.scenario_id: self.context()},
+            observed_at="2026-07-16T00:00:00Z",
+            observation_id=observation_id,
+        )
+        issue_before = registry.load(first_ids[0])
+        second_ids = registry.ingest(
+            self.report(failure),
+            {failure.scenario_id: self.context()},
+            observed_at="2026-07-17T00:00:00Z",
+            observation_id=observation_id,
+        )
+
+        self.assertEqual(second_ids, first_ids)
+        self.assertEqual(registry.load(first_ids[0]), issue_before)
+        self.assertEqual(issue_before["occurrences"], 1)
+        marker_path = registry._observation_path(observation_id)
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            marker,
+            {
+                "schema_version": 1,
+                "observation_hash": hashlib.sha256(
+                    observation_id.encode("utf-8")
+                ).hexdigest(),
+                "issue_ids": list(first_ids),
+            },
+        )
+        self.assertNotIn(secret, marker_path.read_text(encoding="utf-8"))
+
+    def test_observation_id_reuse_with_different_issue_set_is_rejected_unchanged(self) -> None:
+        registry = IssueRegistry(self.root)
+        first = self.failure(code="blocking.first")
+        second = self.failure(code="blocking.second")
+        observation_id = "cycle-a:round:1"
+        first_ids = registry.ingest(
+            self.report(first),
+            {first.scenario_id: self.context()},
+            observed_at="2026-07-16T00:00:00Z",
+            observation_id=observation_id,
+        )
+        issue_path = self.issue_path(self.root, first_ids[0])
+        marker_path = registry._observation_path(observation_id)
+        index_path = self.root / "issues" / "index.json"
+        before = {
+            path: path.read_text(encoding="utf-8")
+            for path in (issue_path, marker_path, index_path)
+        }
+
+        with self.assertRaisesRegex(ValueError, "observation_id|issue set"):
+            registry.ingest(
+                self.report(second),
+                {second.scenario_id: self.context()},
+                observed_at="2026-07-17T00:00:00Z",
+                observation_id=observation_id,
+            )
+
+        self.assertEqual(
+            {path: path.read_text(encoding="utf-8") for path in before},
+            before,
+        )
+        self.assertEqual(registry.load(first_ids[0])["occurrences"], 1)
+
+    def test_ingest_without_observation_id_preserves_occurrence_behavior(self) -> None:
+        registry = IssueRegistry(self.root)
+        issue_id = self.ingest_one(registry)
+
+        second_ids = registry.ingest(
+            self.report(self.failure()),
+            {"scenario-001": self.context()},
+            observed_at="2026-07-17T00:00:00Z",
+        )
+
+        self.assertEqual(second_ids, (issue_id,))
+        self.assertEqual(registry.load(issue_id)["occurrences"], 2)
+
+    def test_empty_observation_marker_is_idempotent(self) -> None:
+        registry = IssueRegistry(self.root)
+        report = EvaluationReport(1, 1, (), {}, {}, {})
+
+        self.assertEqual(
+            registry.ingest(
+                report,
+                {},
+                observed_at="2026-07-16T00:00:00Z",
+                observation_id="cycle-empty:round:0",
+            ),
+            (),
+        )
+        marker_path = registry._observation_path("cycle-empty:round:0")
+        self.assertTrue(marker_path.is_file())
+        self.assertEqual(
+            registry.ingest(
+                report,
+                {},
+                observed_at="2026-07-17T00:00:00Z",
+                observation_id="cycle-empty:round:0",
+            ),
+            (),
+        )
+
+    def test_observation_marker_write_failure_rolls_back_issue_and_index(self) -> None:
+        registry = IssueRegistry(self.root)
+        old_index = registry.index_path.read_text(encoding="utf-8")
+        real_atomic_write = issue_registry._atomic_write_json
+
+        def fail_marker(path: Path, value: object) -> None:
+            if path.parent == registry.observations_root:
+                raise OSError("simulated marker write failure")
+            real_atomic_write(path, value)
+
+        with mock.patch.object(
+            issue_registry,
+            "_atomic_write_json",
+            side_effect=fail_marker,
+        ):
+            with self.assertRaisesRegex(OSError, "marker write failure"):
+                registry.ingest(
+                    self.report(self.failure()),
+                    {"scenario-001": self.context()},
+                    observed_at="2026-07-16T00:00:00Z",
+                    observation_id="cycle-failure:round:0",
+                )
+
+        self.assertEqual(registry.index_path.read_text(encoding="utf-8"), old_index)
+        self.assertEqual(list(registry.status_directories["open"].glob("*.json")), [])
+        self.assertEqual(list(registry.observations_root.glob("*.json")), [])
+        recovered = IssueRegistry(self.root)
+        self.assertEqual(list(recovered.observations_root.glob("*.json")), [])
+
+    def test_observation_index_failure_rolls_back_marker_and_issue(self) -> None:
+        registry = IssueRegistry(self.root)
+        old_index = registry.index_path.read_text(encoding="utf-8")
+        real_replace = os.replace
+        failed = False
+
+        def fail_index_once(source: object, destination: object) -> None:
+            nonlocal failed
+            if Path(destination) == registry.index_path and not failed:
+                failed = True
+                raise OSError("simulated observation index failure")
+            real_replace(source, destination)
+
+        with mock.patch.object(
+            issue_registry.os,
+            "replace",
+            side_effect=fail_index_once,
+        ):
+            with self.assertRaisesRegex(OSError, "observation index failure"):
+                registry.ingest(
+                    self.report(self.failure()),
+                    {"scenario-001": self.context()},
+                    observed_at="2026-07-16T00:00:00Z",
+                    observation_id="cycle-failure:round:1",
+                )
+
+        self.assertEqual(registry.index_path.read_text(encoding="utf-8"), old_index)
+        self.assertEqual(list(registry.status_directories["open"].glob("*.json")), [])
+        self.assertEqual(list(registry.observations_root.glob("*.json")), [])
+        IssueRegistry(self.root)
+
+    def test_corrupt_observation_marker_is_rejected(self) -> None:
+        registry = IssueRegistry(self.root)
+        observation_id = "cycle-corrupt:round:0"
+        registry.ingest(
+            self.report(self.failure()),
+            {"scenario-001": self.context()},
+            observed_at="2026-07-16T00:00:00Z",
+            observation_id=observation_id,
+        )
+        marker_path = registry._observation_path(observation_id)
+        marker_path.write_text('{"schema_version":1}', encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "observation"):
+            IssueRegistry(self.root)
+
+    def test_symlinked_observation_marker_is_rejected(self) -> None:
+        registry = IssueRegistry(self.root)
+        observation_id = "cycle-link:round:0"
+        registry.ingest(
+            self.report(self.failure()),
+            {"scenario-001": self.context()},
+            observed_at="2026-07-16T00:00:00Z",
+            observation_id=observation_id,
+        )
+        marker_path = registry._observation_path(observation_id)
+        marker_content = marker_path.read_text(encoding="utf-8")
+        outside = Path(self.temporary_directory.name) / "outside-marker.json"
+        outside.write_text(marker_content, encoding="utf-8")
+        marker_path.unlink()
+        try:
+            marker_path.symlink_to(outside)
+        except OSError:
+            self.skipTest("file links are unavailable")
+
+        with self.assertRaisesRegex(ValueError, "link|reparse"):
+            IssueRegistry(self.root)
+
+    def test_journal_rejects_non_null_observation_before_image(self) -> None:
+        registry = IssueRegistry(self.root)
+        observation_id = "cycle-journal:round:0"
+        registry.ingest(
+            self.report(self.failure()),
+            {"scenario-001": self.context()},
+            observed_at="2026-07-16T00:00:00Z",
+            observation_id=observation_id,
+        )
+        marker_path = registry._observation_path(observation_id)
+        index = json.loads(registry.index_path.read_text(encoding="utf-8"))
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        issue_registry._atomic_write_json(
+            registry._journal_path,
+            {
+                "schema_version": 1,
+                "files": [
+                    {"path": "index.json", "before": index},
+                    {
+                        "path": f"observations/{marker_path.name}",
+                        "before": marker,
+                    },
+                ],
+            },
+        )
+
+        with self.assertRaisesRegex(ValueError, "observation.*before-image"):
+            IssueRegistry(self.root)
+
+        self.assertTrue(registry._journal_path.is_file())
 
     def test_same_root_cause_merges_across_seed_commit_timing_and_error_text(self) -> None:
         registry = IssueRegistry(self.root)

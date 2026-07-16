@@ -14,7 +14,15 @@ from scripts import run_autonomous_cycle as cli_module
 from scripts.run_autonomous_cycle import main
 from tests.evaluation import autonomous_cycle
 from tests.evaluation.autonomous_cycle import run_cycle
-from tests.evaluation.schemas import EvaluationReport
+from tests.evaluation.issue_registry import IssueRegistry
+from tests.evaluation.schemas import (
+    EvaluationReport,
+    FailureRecord,
+    HealthPersona,
+    MenuExpectation,
+    Scenario,
+    Violation,
+)
 
 
 class StepClock:
@@ -23,6 +31,19 @@ class StepClock:
 
     def __call__(self) -> float:
         return next(self._values)
+
+
+class SequenceUtcNow:
+    def __init__(self, *values: str) -> None:
+        self._values = iter(values)
+
+    def __call__(self) -> str:
+        return next(self._values)
+
+
+class RaisingClock:
+    def __call__(self) -> float:
+        raise RuntimeError("clock unavailable")
 
 
 class FakeRunner:
@@ -41,9 +62,11 @@ class RecordingFactory:
         self,
         reports: dict[int, EvaluationReport] | None = None,
         errors: dict[int, Exception] | None = None,
+        contexts: dict[int, dict[str, object]] | None = None,
     ) -> None:
         self.reports = reports or {}
         self.errors = errors or {}
+        self.contexts = contexts or {}
         self.calls: list[tuple[Path, int, str]] = []
 
     def __call__(self, output_dir: Path, *, seed: int, mode: str) -> FakeRunner:
@@ -51,13 +74,16 @@ class RecordingFactory:
         if seed in self.errors:
             raise self.errors[seed]
         report = self.reports.get(seed, EvaluationReport(4, 4, (), {}, {}, {}))
-        return FakeRunner(report, {f"scenario-{seed}": {"seed": seed}})
+        context = self.contexts.get(seed, {f"scenario-{seed}": {"seed": seed}})
+        return FakeRunner(report, context)
 
 
 class FakeRegistry:
     def __init__(self, issue_ids: dict[int, tuple[str, ...]] | None = None) -> None:
         self.issue_ids = issue_ids or {}
-        self.calls: list[tuple[EvaluationReport, dict[str, object], str]] = []
+        self.calls: list[
+            tuple[EvaluationReport, dict[str, object], str, str | None]
+        ] = []
 
     def ingest(
         self,
@@ -65,8 +91,9 @@ class FakeRegistry:
         scenario_context: dict[str, object],
         *,
         observed_at: str,
+        observation_id: str | None = None,
     ) -> tuple[str, ...]:
-        self.calls.append((report, scenario_context, observed_at))
+        self.calls.append((report, scenario_context, observed_at, observation_id))
         seed = int(next(iter(scenario_context.values()))["seed"])
         return self.issue_ids.get(seed, ())
 
@@ -118,6 +145,43 @@ class AutonomousCycleTests(unittest.TestCase):
         return json.loads(
             (self.cycle_dir(cycle_id) / "cycle.json").read_text(encoding="utf-8")
         )
+
+    @staticmethod
+    def blocking_evaluation(seed: int = 40) -> tuple[EvaluationReport, dict[str, object]]:
+        scenario = Scenario(
+            f"scenario-{seed}",
+            HealthPersona(f"persona-{seed}", "single_condition"),
+            ("Plan dinner without peanuts.",),
+            MenuExpectation(forbidden_terms=("peanut",)),
+            seed,
+            "hard_constraint",
+        )
+        failure = FailureRecord(
+            scenario.scenario_id,
+            seed,
+            "abc123",
+            scenario.messages,
+            ("No peanuts.",),
+            (
+                Violation(
+                    "constraint.forbidden_term",
+                    "blocking",
+                    "Found peanut.",
+                    {"term": "peanut"},
+                ),
+            ),
+            1.0,
+        )
+        context = {
+            "holdout": False,
+            "health_bucket": scenario.persona.primary_bucket,
+            "intent": scenario.intent,
+            "expectation": scenario.expectation.to_dict(),
+            "scenario": scenario.to_dict(),
+        }
+        return EvaluationReport(1, 0, (failure,), {}, {}, {}), {
+            scenario.scenario_id: context
+        }
 
     @staticmethod
     def make_directory_link(link: Path, target: Path) -> bool:
@@ -195,6 +259,45 @@ class AutonomousCycleTests(unittest.TestCase):
         self.assertEqual(recovered["status"], "completed")
         self.assertEqual(recovered["completed_rounds"], 3)
 
+    def test_resume_clears_stale_running_round_before_earlier_failed_round(self) -> None:
+        first = RecordingFactory(errors={40: OSError("round failed")})
+        failed = self.execute_cycle(
+            cycle_id="stale-running",
+            factory=first,
+            continue_on_error=True,
+            clock=StepClock(1, 1.1, 2, 2.2, 3, 3.3),
+        )
+        path = self.cycle_dir("stale-running") / "cycle.json"
+        stale_running = {
+            **failed["rounds"][2],
+            "status": "running",
+            "total": None,
+            "passed": None,
+            "failures": None,
+            "elapsed_ms": None,
+            "issue_ids": [],
+            "finished_at": None,
+            "error_type": None,
+            "error": None,
+        }
+        crashed = {
+            **failed,
+            "status": "running",
+            "completed_rounds": 1,
+            "rounds": [failed["rounds"][0], failed["rounds"][1], stale_running],
+        }
+        path.write_text(json.dumps(crashed), encoding="utf-8")
+        factory = RecordingFactory()
+
+        recovered = self.execute_cycle(
+            cycle_id="stale-running",
+            factory=factory,
+            clock=StepClock(4, 4.1, 5, 5.1),
+        )
+
+        self.assertEqual([call[1] for call in factory.calls], [40, 42])
+        self.assertEqual(recovered["status"], "completed")
+
     def test_rejects_resume_parameter_mismatch(self) -> None:
         self.execute_cycle()
         for key, value in (("mode", "daily"), ("rounds", 4), ("base_seed", 41)):
@@ -243,6 +346,162 @@ class AutonomousCycleTests(unittest.TestCase):
         self.assertEqual(state["rounds"][0]["issue_ids"], ["issue-z", "issue-a"])
         self.assertEqual(len(registry.calls), 3)
         self.assertEqual(registry.calls[0][2], "2026-07-16T01:02:03Z")
+        self.assertEqual(
+            [call[3] for call in registry.calls],
+            [
+                "daily.2026-07-16:round:0",
+                "daily.2026-07-16:round:1",
+                "daily.2026-07-16:round:2",
+            ],
+        )
+
+    def test_real_registry_retry_after_cycle_write_failure_is_idempotent(self) -> None:
+        report, context = self.blocking_evaluation()
+        factory = RecordingFactory(reports={40: report}, contexts={40: context})
+        registry = IssueRegistry(self.root)
+        real_atomic_write = autonomous_cycle._atomic_write_json
+        failed = False
+
+        def fail_first_completed_state(path: Path, value: object) -> None:
+            nonlocal failed
+            rounds = value.get("rounds", []) if isinstance(value, dict) else []
+            if (
+                path.name == "cycle.json"
+                and any(item.get("status") == "completed" for item in rounds)
+                and not failed
+            ):
+                failed = True
+                raise OSError("simulated completed state write failure")
+            real_atomic_write(path, value)
+
+        with mock.patch.object(
+            autonomous_cycle,
+            "_atomic_write_json",
+            side_effect=fail_first_completed_state,
+        ):
+            with self.assertRaisesRegex(OSError, "completed state write failure"):
+                self.execute_cycle(
+                    cycle_id="idempotent-retry",
+                    rounds=1,
+                    factory=factory,
+                    registry=registry,
+                    clock=StepClock(1, 1.1),
+                )
+
+        state = self.execute_cycle(
+            cycle_id="idempotent-retry",
+            rounds=1,
+            factory=factory,
+            registry=registry,
+            clock=StepClock(2, 2.1),
+        )
+
+        self.assertEqual(state["status"], "completed")
+        issue_id = state["issue_ids"][0]
+        self.assertEqual(registry.load(issue_id)["occurrences"], 1)
+        self.assertEqual(len(factory.calls), 2)
+
+    def test_invalid_finished_at_becomes_operational_failure_with_valid_timestamp(self) -> None:
+        valid = "2026-07-16T01:02:03Z"
+        utc_now = SequenceUtcNow(valid, valid, valid, valid, "invalid", valid, valid)
+
+        state = run_cycle(
+            self.root,
+            "invalid-finished-at",
+            "quick",
+            1,
+            10,
+            runner_factory=RecordingFactory(),
+            registry=FakeRegistry(),
+            clock=StepClock(1, 1.1, 1.2),
+            utc_now=utc_now,
+            commit_sha="abc123",
+            repository_root=self.repository_root,
+        )
+
+        self.assertEqual(state["status"], "stopped")
+        self.assertEqual(state["rounds"][0]["status"], "failed")
+        self.assertEqual(state["rounds"][0]["error_type"], "ValueError")
+        persisted = json.loads(
+            (self.cycle_dir("invalid-finished-at") / "cycle.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(persisted["rounds"][0]["finished_at"], valid)
+        self.assertEqual(persisted["updated_at"], valid)
+
+    def test_persistently_invalid_finished_at_leaves_recoverable_running_state(self) -> None:
+        valid = "2026-07-16T01:02:03Z"
+        calls = 0
+
+        def utc_now() -> str:
+            nonlocal calls
+            calls += 1
+            return valid if calls <= 4 else "invalid"
+
+        with self.assertRaises(ValueError):
+            run_cycle(
+                self.root,
+                "persistent-invalid-time",
+                "quick",
+                1,
+                10,
+                runner_factory=RecordingFactory(),
+                registry=FakeRegistry(),
+                clock=StepClock(1, 1.1, 1.2),
+                utc_now=utc_now,
+                commit_sha="abc123",
+                repository_root=self.repository_root,
+            )
+
+        persisted = self.load_cycle("persistent-invalid-time")
+        self.assertEqual(persisted["status"], "running")
+        self.assertIsNone(persisted["rounds"][0]["finished_at"])
+        recovered = self.execute_cycle(
+            cycle_id="persistent-invalid-time",
+            rounds=1,
+            base_seed=10,
+            clock=StepClock(2, 2.1),
+        )
+        self.assertEqual(recovered["status"], "completed")
+
+    def test_non_finite_and_reversing_clocks_are_operational_failures(self) -> None:
+        cases = {
+            "nan": StepClock(1.0, float("nan"), 1.1),
+            "infinite": StepClock(1.0, float("inf"), 1.1),
+            "reversing": StepClock(2.0, 1.0, 2.1),
+            "overflow": StepClock(0.0, 1e308, 0.1),
+        }
+
+        for name, clock in cases.items():
+            with self.subTest(name=name):
+                state = self.execute_cycle(
+                    cycle_id=f"clock-{name}",
+                    rounds=1,
+                    clock=clock,
+                )
+                self.assertEqual(state["status"], "stopped")
+                self.assertEqual(state["rounds"][0]["status"], "failed")
+                self.assertEqual(state["rounds"][0]["error_type"], "ValueError")
+
+    def test_first_clock_exception_is_recorded_with_zero_elapsed(self) -> None:
+        state = run_cycle(
+            self.root,
+            "clock-exception",
+            "quick",
+            1,
+            10,
+            runner_factory=RecordingFactory(),
+            registry=FakeRegistry(),
+            clock=RaisingClock(),
+            utc_now=self.utc_now,
+            commit_sha="abc123",
+            repository_root=self.repository_root,
+        )
+
+        self.assertEqual(state["status"], "stopped")
+        self.assertEqual(state["rounds"][0]["error_type"], "RuntimeError")
+        self.assertEqual(state["rounds"][0]["elapsed_ms"], 0.0)
 
     def test_writes_consistent_json_and_markdown_summaries(self) -> None:
         registry = FakeRegistry({40: ("issue-1",)})
@@ -481,6 +740,48 @@ class AutonomousCycleTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.execute_cycle(cycle_id="bool-state", rounds=1, base_seed=1)
 
+    def test_rejects_non_prefix_round_indices_and_multiple_running_rounds(self) -> None:
+        self.execute_cycle(cycle_id="round-shape")
+        path = self.cycle_dir("round-shape") / "cycle.json"
+        valid = json.loads(path.read_text(encoding="utf-8"))
+        missing_prefix = {
+            **valid,
+            "status": "running",
+            "completed_rounds": 2,
+            "rounds": valid["rounds"][1:],
+        }
+
+        def running(record: dict[str, object]) -> dict[str, object]:
+            return {
+                **record,
+                "status": "running",
+                "total": None,
+                "passed": None,
+                "failures": None,
+                "elapsed_ms": None,
+                "issue_ids": [],
+                "finished_at": None,
+                "error_type": None,
+                "error": None,
+            }
+
+        multiple_running = {
+            **valid,
+            "status": "running",
+            "completed_rounds": 1,
+            "rounds": [
+                running(valid["rounds"][0]),
+                running(valid["rounds"][1]),
+                valid["rounds"][2],
+            ],
+        }
+
+        for state in (missing_prefix, multiple_running):
+            with self.subTest(rounds=state["rounds"]):
+                path.write_text(json.dumps(state), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    self.execute_cycle(cycle_id="round-shape")
+
     def test_registry_initialization_error_is_recorded_as_failed_round(self) -> None:
         with mock.patch.object(
             autonomous_cycle,
@@ -612,6 +913,15 @@ class AutonomousCycleCliTests(unittest.TestCase):
             code = main([], cycle_runner=mock.Mock(side_effect=ValueError("bad state")))
         self.assertEqual(code, 2)
         self.assertIn("cycle error: bad state", error.getvalue())
+
+        runtime_error = io.StringIO()
+        with redirect_stderr(runtime_error):
+            code = main(
+                [],
+                cycle_runner=mock.Mock(side_effect=RuntimeError("clock exploded")),
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("cycle error: clock exploded", runtime_error.getvalue())
 
     def test_cli_invalid_rounds_uses_argparse_system_exit(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:

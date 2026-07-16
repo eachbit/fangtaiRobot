@@ -26,6 +26,7 @@ _SCHEMA_VERSION = 1
 _SCENARIO_HASH_PATTERN = re.compile(
     r"(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z"
 )
+_OBSERVATION_HASH_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 _LOCK_RETRIES = 100
 _LOCK_RETRY_DELAY_SECONDS = 0.01
 _PUBLIC_FIELDS = frozenset(
@@ -279,6 +280,7 @@ class IssueRegistry:
         self.status_directories = {
             status: self.issues_root / status for status in sorted(ISSUE_STATUSES)
         }
+        self.observations_root = self.issues_root / "observations"
         self.index_path = self.issues_root / "index.json"
         self._lock_path = self.issues_root / ".registry.lock"
         self._journal_path = self.issues_root / ".transaction.json"
@@ -291,6 +293,7 @@ class IssueRegistry:
             self.evaluation_root,
             self.issues_root,
             *(self.status_directories[status] for status in sorted(ISSUE_STATUSES)),
+            self.observations_root,
         ]
         for path in paths:
             if _is_link_or_reparse_point(path):
@@ -306,6 +309,7 @@ class IssueRegistry:
             self.evaluation_root,
             self.issues_root,
             *(self.status_directories[status] for status in sorted(ISSUE_STATUSES)),
+            self.observations_root,
         ]
         for path in paths:
             if _is_link_or_reparse_point(path):
@@ -325,6 +329,8 @@ class IssueRegistry:
             resolved = directory.resolve()
             if resolved.parent != resolved_issues:
                 raise ValueError("issue status directory escapes issues root")
+        if self.observations_root.resolve().parent != resolved_issues:
+            raise ValueError("observations directory escapes issues root")
 
         for path in (self.index_path, self._lock_path, self._journal_path):
             if _is_link_or_reparse_point(path):
@@ -433,6 +439,79 @@ class IssueRegistry:
         if path.resolve().parent != directory.resolve():
             raise ValueError("issue path escapes status directory")
         return path
+
+    @staticmethod
+    def _observation_hash(observation_id: Any) -> str:
+        if type(observation_id) is not str or not observation_id:
+            raise ValueError("observation_id must be a non-empty string")
+        return hashlib.sha256(observation_id.encode("utf-8")).hexdigest()
+
+    def _observation_path_from_hash(self, observation_hash: str) -> Path:
+        if (
+            type(observation_hash) is not str
+            or _OBSERVATION_HASH_PATTERN.fullmatch(observation_hash) is None
+        ):
+            raise ValueError("invalid observation hash")
+        path = self.observations_root / f"{observation_hash}.json"
+        if path.resolve().parent != self.observations_root.resolve():
+            raise ValueError("observation path escapes observations directory")
+        return path
+
+    def _observation_path(self, observation_id: str) -> Path:
+        return self._observation_path_from_hash(self._observation_hash(observation_id))
+
+    def _validate_observation(
+        self,
+        value: Any,
+        *,
+        expected_hash: str,
+    ) -> dict[str, Any]:
+        if (
+            type(value) is not dict
+            or frozenset(value)
+            != {"schema_version", "observation_hash", "issue_ids"}
+        ):
+            raise ValueError("observation marker fields do not match the registry schema")
+        if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+            raise ValueError("unsupported observation marker schema version")
+        if value["observation_hash"] != expected_hash:
+            raise ValueError("observation marker hash does not match its filename")
+        issue_ids = value["issue_ids"]
+        if type(issue_ids) is not list:
+            raise ValueError("observation marker issue_ids must be an array")
+        if any(
+            type(issue_id) is not str
+            or ISSUE_ID_PATTERN.fullmatch(issue_id) is None
+            for issue_id in issue_ids
+        ):
+            raise ValueError("observation marker contains an invalid issue id")
+        if issue_ids != sorted(set(issue_ids)):
+            raise ValueError("observation marker issue_ids must be sorted and deduplicated")
+        return value
+
+    def _load_observation_path(
+        self,
+        path: Path,
+        *,
+        expected_hash: str,
+    ) -> dict[str, Any]:
+        if _is_link_or_reparse_point(path):
+            raise ValueError("observation marker must not be a link or reparse point")
+        metadata = path.stat()
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("observation marker must be a regular file")
+        return self._validate_observation(
+            _strict_json_object_from_path(path),
+            expected_hash=expected_hash,
+        )
+
+    def _validate_observation_files(self, issue_ids: set[str]) -> None:
+        for path in sorted(self.observations_root.iterdir()):
+            if path.suffix != ".json" or _OBSERVATION_HASH_PATTERN.fullmatch(path.stem) is None:
+                raise ValueError(f"invalid observation marker filename: {path.name}")
+            marker = self._load_observation_path(path, expected_hash=path.stem)
+            if not set(marker["issue_ids"]).issubset(issue_ids):
+                raise ValueError("observation marker references an unknown issue")
 
     def _assert_issue_file(self, path: Path) -> None:
         if _is_link_or_reparse_point(path):
@@ -587,9 +666,11 @@ class IssueRegistry:
         preferred_statuses: Mapping[str, str] | None = None,
     ) -> None:
         self._assert_layout()
+        entries = self._index_entries(preferred_statuses)
+        self._validate_observation_files(set(entries))
         index = {
             "schema_version": _SCHEMA_VERSION,
-            "issues": self._index_entries(preferred_statuses),
+            "issues": entries,
         }
         _atomic_write_json(self.index_path, index)
 
@@ -621,11 +702,18 @@ class IssueRegistry:
         index = self._validate_index_payload(_strict_json_object_from_path(self.index_path))
         if index["issues"] != self._index_entries():
             raise ValueError("issue index does not match persisted issue files")
+        self._validate_observation_files(set(index["issues"]))
 
     def _transaction_relative_path(self, path: Path) -> str:
         candidate = Path(path).absolute()
         if candidate == self.index_path:
             return "index.json"
+        if (
+            candidate.parent == self.observations_root
+            and candidate.suffix == ".json"
+            and _OBSERVATION_HASH_PATTERN.fullmatch(candidate.stem) is not None
+        ):
+            return f"observations/{candidate.name}"
         for status, directory in self.status_directories.items():
             if candidate.parent == directory and ISSUE_ID_PATTERN.fullmatch(candidate.stem):
                 if candidate.suffix != ".json":
@@ -638,6 +726,12 @@ class IssueRegistry:
             return self.index_path
         if type(relative_path) is not str:
             raise ValueError("transaction path must be a string")
+        observation_match = re.fullmatch(
+            r"observations/([0-9a-f]{64})\.json",
+            relative_path,
+        )
+        if observation_match is not None:
+            return self._observation_path_from_hash(observation_match.group(1))
         match = re.fullmatch(
             r"(open|verifying|resolved)/(issue-[0-9a-f]{24})\.json",
             relative_path,
@@ -657,6 +751,11 @@ class IssueRegistry:
             raise ValueError("transaction snapshot must be a JSON object or null")
         if relative_path == "index.json":
             return self._validate_index_payload(value)
+        if relative_path.startswith("observations/"):
+            return self._validate_observation(
+                value,
+                expected_hash=Path(relative_path).stem,
+            )
         status, filename = relative_path.split("/", 1)
         return self._validate_issue(
             value,
@@ -714,6 +813,12 @@ class IssueRegistry:
         grouped: dict[str, list[tuple[str, dict[str, Any] | None]]] = {}
         for relative_path, _, before in entries:
             if relative_path == "index.json":
+                continue
+            if relative_path.startswith("observations/"):
+                if before is not None:
+                    raise ValueError(
+                        "transaction observation marker before-image must be null"
+                    )
                 continue
             _, filename = relative_path.split("/", 1)
             issue_id = filename.removesuffix(".json")
@@ -949,12 +1054,16 @@ class IssueRegistry:
         scenario_context: Mapping[str, Mapping[str, Any]],
         *,
         observed_at: str,
+        observation_id: str | None = None,
     ) -> tuple[str, ...]:
         if not isinstance(report, EvaluationReport):
             raise ValueError("report must be an EvaluationReport")
         if not isinstance(scenario_context, Mapping):
             raise ValueError("scenario_context must be a mapping")
         _parse_observed_at(observed_at)
+        observation_hash = (
+            None if observation_id is None else self._observation_hash(observation_id)
+        )
         touched: set[str] = set()
         working: dict[str, dict[str, Any]] = {}
         sources: dict[str, tuple[str, Path] | None] = {}
@@ -1008,7 +1117,29 @@ class IssueRegistry:
                     working[issue_id] = issue
                     touched.add(issue_id)
 
-            if not working:
+            issue_ids = tuple(sorted(touched))
+            marker_path: Path | None = None
+            marker: dict[str, Any] | None = None
+            if observation_hash is not None:
+                marker_path = self._observation_path_from_hash(observation_hash)
+                if marker_path.exists() or marker_path.is_symlink():
+                    existing_marker = self._load_observation_path(
+                        marker_path,
+                        expected_hash=observation_hash,
+                    )
+                    if tuple(existing_marker["issue_ids"]) != issue_ids:
+                        raise ValueError(
+                            "observation_id was reused with a different issue set"
+                        )
+                    self._validate_index_matches_files()
+                    return issue_ids
+                marker = {
+                    "schema_version": 1,
+                    "observation_hash": observation_hash,
+                    "issue_ids": list(issue_ids),
+                }
+
+            if not working and marker_path is None:
                 return ()
 
             destinations: dict[str, Path] = {}
@@ -1016,6 +1147,8 @@ class IssueRegistry:
                 destination = self._issue_path(issue_id, "open")
                 destinations[issue_id] = destination
             transaction_paths = [self.index_path, *destinations.values()]
+            if marker_path is not None:
+                transaction_paths.append(marker_path)
             transaction_paths.extend(
                 source[1]
                 for source in sources.values()
@@ -1024,12 +1157,14 @@ class IssueRegistry:
             with self._transaction(transaction_paths):
                 for issue_id, issue in sorted(working.items()):
                     _atomic_write_json(destinations[issue_id], issue)
+                if marker_path is not None and marker is not None:
+                    _atomic_write_json(marker_path, marker)
                 for issue_id, source in sources.items():
                     if source is not None and source[1] != destinations[issue_id]:
                         source[1].unlink()
                 self._rebuild_index()
 
-        return tuple(sorted(touched))
+        return issue_ids
 
     def load(self, issue_id: str) -> dict[str, Any]:
         issue_id = _validate_issue_id(issue_id)

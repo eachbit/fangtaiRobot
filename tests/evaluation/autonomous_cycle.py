@@ -471,8 +471,10 @@ def _validate_state(
         raise ValueError("cycle rounds must be an array")
     round_records = [_validate_round(item, rounds, base_seed) for item in value["rounds"]]
     indices = [record["index"] for record in round_records]
-    if indices != sorted(indices) or len(indices) != len(set(indices)):
-        raise ValueError("cycle rounds must have unique ordered indices")
+    if indices != list(range(len(indices))):
+        raise ValueError("cycle round indices must form a contiguous prefix from zero")
+    if sum(record["status"] == "running" for record in round_records) > 1:
+        raise ValueError("cycle state must contain at most one running round")
     completed = sum(record["status"] == "completed" for record in round_records)
     if type(value["completed_rounds"]) is not int or value["completed_rounds"] != completed:
         raise ValueError("completed_rounds aggregate is inconsistent")
@@ -548,10 +550,77 @@ def _replace_round(state: dict[str, Any], record: dict[str, Any]) -> None:
     state["issue_ids"] = _aggregate_issue_ids(state["rounds"])
 
 
-def _write_state(path: Path, state: dict[str, Any], utc_now: Callable[[], str]) -> None:
-    state["updated_at"] = utc_now()
-    _validate_timestamp(state["updated_at"], "updated_at")
+def _mark_stale_running_round_failed(state: dict[str, Any]) -> None:
+    for record in state["rounds"]:
+        if record["status"] != "running":
+            continue
+        record.update(
+            {
+                "status": "failed",
+                "elapsed_ms": 0.0,
+                "finished_at": state["updated_at"],
+                "error_type": "InterruptedError",
+                "error": "round was interrupted before completion",
+            }
+        )
+        _replace_round(state, record)
+        return
+
+
+def _write_state(
+    path: Path,
+    state: dict[str, Any],
+    utc_now: Callable[[], str],
+    *,
+    cycle_id: str,
+    mode: str,
+    rounds: int,
+    base_seed: int,
+    update_timestamp: bool = True,
+) -> None:
+    if update_timestamp:
+        state["updated_at"] = utc_now()
+        _validate_timestamp(state["updated_at"], "updated_at")
+    _validate_state(
+        state,
+        cycle_id=cycle_id,
+        mode=mode,
+        rounds=rounds,
+        base_seed=base_seed,
+    )
     _atomic_write_json(path, state)
+
+
+def _clock_value(clock: Callable[[], float]) -> float:
+    value = clock()
+    if type(value) not in (int, float) or not math.isfinite(value):
+        raise ValueError("clock must return a finite non-boolean number")
+    return float(value)
+
+
+def _elapsed_ms(clock: Callable[[], float], started: float) -> float:
+    finished = _clock_value(clock)
+    elapsed = finished - started
+    if not math.isfinite(elapsed):
+        raise ValueError("clock elapsed time must be finite")
+    if elapsed < 0:
+        raise ValueError("clock must not move backwards")
+    milliseconds = elapsed * 1000.0
+    if not math.isfinite(milliseconds):
+        raise ValueError("clock elapsed milliseconds must be finite")
+    return round(milliseconds, 2)
+
+
+def _failure_elapsed_ms(
+    clock: Callable[[], float],
+    started: float | None,
+) -> float:
+    if started is None:
+        return 0.0
+    try:
+        return _elapsed_ms(clock, started)
+    except Exception:
+        return 0.0
 
 
 def _summary(state: dict[str, Any]) -> dict[str, Any]:
@@ -657,8 +726,17 @@ def run_cycle(
             if state["status"] == "completed":
                 _write_summaries(cycle_dir, state)
                 return state
+            _mark_stale_running_round_failed(state)
             state["status"] = "running"
-            _write_state(state_path, state, utc_now)
+            _write_state(
+                state_path,
+                state,
+                utc_now,
+                cycle_id=cycle_id,
+                mode=mode,
+                rounds=rounds,
+                base_seed=base_seed,
+            )
         else:
             created_at = utc_now()
             _validate_timestamp(created_at, "created_at")
@@ -679,7 +757,16 @@ def run_cycle(
                 "issue_ids": [],
                 "rounds": [],
             }
-            _atomic_write_json(state_path, state)
+            _write_state(
+                state_path,
+                state,
+                utc_now,
+                cycle_id=cycle_id,
+                mode=mode,
+                rounds=rounds,
+                base_seed=base_seed,
+                update_timestamp=False,
+            )
 
         issue_registry = registry
         completed_indices = {
@@ -694,9 +781,18 @@ def run_cycle(
             _validate_timestamp(started_at, "round.started_at")
             record = _new_round(index, seed, started_at)
             _replace_round(state, record)
-            _write_state(state_path, state, utc_now)
-            started = clock()
+            _write_state(
+                state_path,
+                state,
+                utc_now,
+                cycle_id=cycle_id,
+                mode=mode,
+                rounds=rounds,
+                base_seed=base_seed,
+            )
+            started: float | None = None
             try:
+                started = _clock_value(clock)
                 rounds_root = cycle_dir / "rounds"
                 _create_directory(rounds_root)
                 _assert_no_link_ancestors(rounds_root)
@@ -719,10 +815,13 @@ def run_cycle(
                         report,
                         runner.scenario_context,
                         observed_at=utc_now(),
+                        observation_id=f"{cycle_id}:round:{index}",
                     )
                 )
                 _validate_issue_ids(issue_ids, "round.issue_ids")
-                elapsed_ms = round(max(0.0, (clock() - started) * 1000.0), 2)
+                elapsed_ms = _elapsed_ms(clock, started)
+                finished_at = utc_now()
+                _validate_timestamp(finished_at, "round.finished_at")
                 record.update(
                     {
                         "status": "completed",
@@ -731,16 +830,18 @@ def run_cycle(
                         "failures": report.total - report.passed,
                         "elapsed_ms": elapsed_ms,
                         "issue_ids": issue_ids,
-                        "finished_at": utc_now(),
+                        "finished_at": finished_at,
                     }
                 )
             except Exception as error:
-                elapsed_ms = round(max(0.0, (clock() - started) * 1000.0), 2)
+                elapsed_ms = _failure_elapsed_ms(clock, started)
+                finished_at = utc_now()
+                _validate_timestamp(finished_at, "round.finished_at")
                 record.update(
                     {
                         "status": "failed",
                         "elapsed_ms": elapsed_ms,
-                        "finished_at": utc_now(),
+                        "finished_at": finished_at,
                         "error_type": type(error).__name__,
                         "error": str(error),
                     }
@@ -748,18 +849,42 @@ def run_cycle(
                 _replace_round(state, record)
                 if not continue_on_error:
                     state["status"] = "stopped"
-                    _write_state(state_path, state, utc_now)
+                    _write_state(
+                        state_path,
+                        state,
+                        utc_now,
+                        cycle_id=cycle_id,
+                        mode=mode,
+                        rounds=rounds,
+                        base_seed=base_seed,
+                    )
                     _write_summaries(cycle_dir, state)
                     return state
             _replace_round(state, record)
-            _write_state(state_path, state, utc_now)
+            _write_state(
+                state_path,
+                state,
+                utc_now,
+                cycle_id=cycle_id,
+                mode=mode,
+                rounds=rounds,
+                base_seed=base_seed,
+            )
 
         state["status"] = (
             "failed"
             if any(record["status"] == "failed" for record in state["rounds"])
             else "completed"
         )
-        _write_state(state_path, state, utc_now)
+        _write_state(
+            state_path,
+            state,
+            utc_now,
+            cycle_id=cycle_id,
+            mode=mode,
+            rounds=rounds,
+            base_seed=base_seed,
+        )
         _write_summaries(cycle_dir, state)
         return state
 

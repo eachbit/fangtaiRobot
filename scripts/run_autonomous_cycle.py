@@ -50,7 +50,7 @@ def main(
             continue_on_error=args.continue_on_error,
             repository_root=_REPO_ROOT,
         )
-    except (OSError, ValueError) as error:
+    except Exception as error:
         print(f"cycle error: {error}", file=sys.stderr)
         return 2
 
