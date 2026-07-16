@@ -10,6 +10,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+from scripts import run_autonomous_cycle as cli_module
 from scripts.run_autonomous_cycle import main
 from tests.evaluation import autonomous_cycle
 from tests.evaluation.autonomous_cycle import run_cycle
@@ -74,7 +75,9 @@ class AutonomousCycleTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
-        self.root = Path(self.temporary_directory.name) / "evaluation"
+        self.repository_root = Path(self.temporary_directory.name) / "repo"
+        self.repository_root.mkdir()
+        self.root = self.repository_root / "artifacts" / "evaluation"
 
     @staticmethod
     def utc_now() -> str:
@@ -105,6 +108,7 @@ class AutonomousCycleTests(unittest.TestCase):
             or StepClock(*([1.0, 1.125] * (rounds if type(rounds) is int and rounds > 0 else 1))),
             utc_now=self.utc_now,
             commit_sha="abc123",
+            repository_root=self.repository_root,
         )
 
     def cycle_dir(self, cycle_id: str = "daily.2026-07-16") -> Path:
@@ -279,6 +283,9 @@ class AutonomousCycleTests(unittest.TestCase):
             "",
             ".",
             "..",
+            "sample.",
+            "...",
+            "trailing..",
             "a" * 81,
             "../escape",
             "a/b",
@@ -301,6 +308,11 @@ class AutonomousCycleTests(unittest.TestCase):
             with self.subTest(seed=seed), self.assertRaises(ValueError):
                 self.execute_cycle(base_seed=seed)  # type: ignore[arg-type]
 
+    def test_cycle_id_rejects_trailing_periods(self) -> None:
+        for cycle_id in ("sample.", "...", "trailing.."):
+            with self.subTest(cycle_id=cycle_id), self.assertRaises(ValueError):
+                autonomous_cycle._validate_cycle_id(cycle_id)
+
     def test_rejects_parent_traversal_and_symlinked_cycle_layout(self) -> None:
         with self.assertRaises(ValueError):
             run_cycle(
@@ -311,6 +323,7 @@ class AutonomousCycleTests(unittest.TestCase):
                 1,
                 runner_factory=RecordingFactory(),
                 registry=FakeRegistry(),
+                repository_root=self.repository_root,
             )
 
         outside = Path(self.temporary_directory.name) / "outside"
@@ -335,6 +348,68 @@ class AutonomousCycleTests(unittest.TestCase):
 
         self.assertEqual(state["status"], "stopped")
         self.assertEqual(state["rounds"][0]["status"], "failed")
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_repository_boundary_accepts_injected_artifacts_evaluation_root(self) -> None:
+        state = self.execute_cycle(cycle_id="inside-repository", rounds=1)
+
+        self.assertEqual(state["status"], "completed")
+        self.assertTrue(
+            (self.root / "cycles" / "inside-repository" / "cycle.json").is_file()
+        )
+
+    def test_default_repository_boundary_rejects_external_absolute_root(self) -> None:
+        outside = Path(self.temporary_directory.name) / "outside-default"
+
+        with self.assertRaises(ValueError):
+            run_cycle(
+                outside,
+                "outside-default",
+                "quick",
+                1,
+                1,
+                runner_factory=RecordingFactory(),
+                registry=FakeRegistry(),
+                clock=StepClock(1, 1.1),
+                utc_now=self.utc_now,
+                commit_sha="abc123",
+            )
+
+    def test_repository_boundary_rejects_external_and_unapproved_roots(self) -> None:
+        outside = Path(self.temporary_directory.name) / "outside"
+        invalid_roots = (
+            outside,
+            Path("."),
+            Path("other"),
+            self.repository_root,
+        )
+
+        for evaluation_root in invalid_roots:
+            with self.subTest(evaluation_root=evaluation_root):
+                with self.assertRaises(ValueError):
+                    run_cycle(
+                        evaluation_root,
+                        "boundary",
+                        "quick",
+                        1,
+                        1,
+                        runner_factory=RecordingFactory(),
+                        registry=FakeRegistry(),
+                        repository_root=self.repository_root,
+                    )
+
+        self.assertFalse(outside.exists())
+
+    def test_repository_boundary_rejects_linked_evaluation_root(self) -> None:
+        outside = Path(self.temporary_directory.name) / "outside-evaluation"
+        outside.mkdir()
+        self.root.parent.mkdir(parents=True)
+        if not self.make_directory_link(self.root, outside):
+            self.skipTest("directory links are unavailable")
+
+        with self.assertRaisesRegex(ValueError, "link|reparse"):
+            self.execute_cycle(cycle_id="linked-root", rounds=1)
+
         self.assertEqual(list(outside.iterdir()), [])
 
     def test_rejects_corrupt_duplicate_and_inconsistent_state(self) -> None:
@@ -422,6 +497,7 @@ class AutonomousCycleTests(unittest.TestCase):
                 clock=StepClock(1, 1.1),
                 utc_now=self.utc_now,
                 commit_sha="abc123",
+                repository_root=self.repository_root,
             )
 
         self.assertEqual(state["status"], "stopped")
@@ -496,13 +572,27 @@ class AutonomousCycleCliTests(unittest.TestCase):
             return self.completed_state()
 
         output = io.StringIO()
-        with redirect_stdout(output):
-            code = main(["--rounds", "2", "--seed", "7"], cycle_runner=fake_run)
+        with tempfile.TemporaryDirectory() as directory:
+            repository_root = Path(directory) / "repo"
+            repository_root.mkdir()
+            with (
+                mock.patch.object(cli_module, "_REPO_ROOT", repository_root),
+                redirect_stdout(output),
+            ):
+                code = main(
+                    ["--rounds", "2", "--seed", "7"], cycle_runner=fake_run
+                )
 
         self.assertEqual(code, 0)
         self.assertEqual(
             captured["args"],
-            (Path("artifacts/evaluation"), "quick-7-2", "quick", 2, 7),
+            (
+                repository_root / "artifacts" / "evaluation",
+                "quick-7-2",
+                "quick",
+                2,
+                7,
+            ),
         )
         self.assertFalse(captured["kwargs"]["continue_on_error"])
         self.assertIn("status=completed", output.getvalue())
@@ -527,6 +617,14 @@ class AutonomousCycleCliTests(unittest.TestCase):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
             main(["--rounds", "0"])
         self.assertEqual(raised.exception.code, 2)
+
+    def test_cli_does_not_expose_root_override(self) -> None:
+        cycle_runner = mock.Mock(return_value=self.completed_state())
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            main(["--root", "C:/outside"], cycle_runner=cycle_runner)
+
+        self.assertEqual(raised.exception.code, 2)
+        cycle_runner.assert_not_called()
 
 
 if __name__ == "__main__":

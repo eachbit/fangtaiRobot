@@ -20,6 +20,7 @@ from tests.evaluation.runner import EvaluationRunner, MODE_COUNTS
 from tests.evaluation.schemas import EvaluationReport
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 CYCLE_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,80}\Z")
 _WINDOWS_RESERVED_STEMS = frozenset(
     {"CON", "PRN", "AUX", "NUL"}
@@ -94,9 +95,54 @@ def _validate_cycle_id(cycle_id: Any) -> str:
         raise ValueError("cycle_id must match [A-Za-z0-9._-]{1,80}")
     if cycle_id in {".", ".."}:
         raise ValueError("cycle_id must name a child directory")
+    if cycle_id.endswith("."):
+        raise ValueError("cycle_id must not end with a period")
     if cycle_id.split(".", 1)[0].upper() in _WINDOWS_RESERVED_STEMS:
         raise ValueError("cycle_id uses a reserved Windows stem")
     return cycle_id
+
+
+def _validate_evaluation_root(
+    evaluation_root: str | os.PathLike[str],
+    repository_root: str | os.PathLike[str],
+) -> Path:
+    if not isinstance(repository_root, (str, os.PathLike)):
+        raise ValueError("repository_root must be path-like")
+    lexical_repository = Path(repository_root)
+    if ".." in lexical_repository.parts:
+        raise ValueError("repository_root must not contain parent traversal parts")
+    if not lexical_repository.is_absolute():
+        lexical_repository = Path.cwd() / lexical_repository
+    resolved_repository = Path(os.path.abspath(lexical_repository))
+    _assert_no_link_ancestors(resolved_repository)
+    if not resolved_repository.is_dir():
+        raise ValueError("repository_root must be an existing directory")
+
+    if not isinstance(evaluation_root, (str, os.PathLike)):
+        raise ValueError("evaluation_root must be path-like")
+    lexical_root = Path(evaluation_root)
+    if lexical_root == Path("."):
+        raise ValueError("evaluation_root must not be the current directory")
+    if ".." in lexical_root.parts:
+        raise ValueError("evaluation_root must not contain parent traversal parts")
+    candidate = (
+        lexical_root
+        if lexical_root.is_absolute()
+        else resolved_repository / lexical_root
+    )
+    candidate = Path(os.path.abspath(candidate))
+    allowed_root = resolved_repository / "artifacts" / "evaluation"
+    _assert_no_link_ancestors(allowed_root)
+    _assert_no_link_ancestors(candidate)
+    resolved_allowed = allowed_root.resolve(strict=False)
+    resolved_candidate = candidate.resolve(strict=False)
+    try:
+        resolved_candidate.relative_to(resolved_allowed)
+    except ValueError as exc:
+        raise ValueError(
+            "evaluation_root must be within repository artifacts/evaluation"
+        ) from exc
+    return resolved_candidate
 
 
 def _validate_parameters(
@@ -105,16 +151,9 @@ def _validate_parameters(
     mode: Any,
     rounds: Any,
     base_seed: Any,
+    repository_root: str | os.PathLike[str],
 ) -> tuple[Path, str, str, int, int]:
-    if not isinstance(evaluation_root, (str, os.PathLike)):
-        raise ValueError("evaluation_root must be path-like")
-    lexical_root = Path(evaluation_root)
-    if ".." in lexical_root.parts:
-        raise ValueError("evaluation_root must not contain parent traversal parts")
-    if not lexical_root.is_absolute():
-        lexical_root = Path.cwd() / lexical_root
-    root = Path(os.path.abspath(lexical_root))
-    _assert_no_link_ancestors(root)
+    root = _validate_evaluation_root(evaluation_root, repository_root)
     validated_id = _validate_cycle_id(cycle_id)
     if type(mode) is not str or mode not in MODE_COUNTS:
         raise ValueError(f"mode must be one of {', '.join(MODE_COUNTS)}")
@@ -591,9 +630,15 @@ def run_cycle(
     clock: Callable[[], float] = time.perf_counter,
     utc_now: Callable[[], str] = _utc_now,
     commit_sha: str | Callable[[], str] = _current_commit_sha,
+    repository_root: str | os.PathLike[str] = _REPO_ROOT,
 ) -> dict[str, Any]:
     root, cycle_id, mode, rounds, base_seed = _validate_parameters(
-        evaluation_root, cycle_id, mode, rounds, base_seed
+        evaluation_root,
+        cycle_id,
+        mode,
+        rounds,
+        base_seed,
+        repository_root,
     )
     if type(continue_on_error) is not bool:
         raise ValueError("continue_on_error must be a boolean")

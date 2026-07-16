@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tests.evaluation.autonomous_cycle import run_cycle
+from tests.evaluation.autonomous_cycle import _REPO_ROOT, run_cycle
 from tests.evaluation.runner import MODE_COUNTS
 
 
@@ -28,7 +28,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rounds", type=_positive_int, default=10)
     parser.add_argument("--seed", type=int, default=20260716)
     parser.add_argument("--cycle-id")
-    parser.add_argument("--root", type=Path, default=Path("artifacts/evaluation"))
     parser.add_argument("--continue-on-error", action="store_true")
     return parser
 
@@ -40,14 +39,16 @@ def main(
 ) -> int:
     args = build_parser().parse_args(argv)
     cycle_id = args.cycle_id or f"{args.mode}-{args.seed}-{args.rounds}"
+    evaluation_root = _REPO_ROOT / "artifacts" / "evaluation"
     try:
         state = cycle_runner(
-            args.root,
+            evaluation_root,
             cycle_id,
             args.mode,
             args.rounds,
             args.seed,
             continue_on_error=args.continue_on_error,
+            repository_root=_REPO_ROOT,
         )
     except (OSError, ValueError) as error:
         print(f"cycle error: {error}", file=sys.stderr)
@@ -56,7 +57,7 @@ def main(
     print(
         f"cycle={state['cycle_id']} status={state['status']} "
         f"rounds={state['completed_rounds']}/{state['target_rounds']} "
-        f"issues={len(state['issue_ids'])} root={args.root}"
+        f"issues={len(state['issue_ids'])} root={evaluation_root}"
     )
     if state["status"] != "completed":
         return 2
