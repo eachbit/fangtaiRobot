@@ -1045,6 +1045,67 @@ class IssueRegistryTests(unittest.TestCase):
         self.assertEqual(issue["scenario_ids"], [f"scenario-{i:03d}" for i in range(4, 260)])
         self.assertEqual(issue["seeds"], list(range(4, 260)))
 
+    def test_capped_histories_retain_latest_regression_source_for_export(self) -> None:
+        failures = []
+        contexts = {}
+        for value in range(1, HISTORY_LIMIT + 2):
+            scenario_id = f"scenario-{value:04d}"
+            failures.append(self.failure(scenario_id, seed=value))
+            contexts[scenario_id] = self.context(
+                self.scenario(scenario_id, seed=value)
+            )
+        latest = self.failure("scenario-0000", seed=0)
+        contexts[latest.scenario_id] = self.context(
+            self.scenario(latest.scenario_id, seed=latest.seed)
+        )
+        registry = IssueRegistry(self.root)
+
+        touched = registry.ingest(
+            self.report(*failures, latest, latest),
+            contexts,
+            observed_at="2026-07-17T00:00:00Z",
+        )
+
+        self.assertEqual(len(touched), 1)
+        issue_id = touched[0]
+        issue = registry.load(issue_id)
+        self.assertLessEqual(len(issue["scenario_ids"]), HISTORY_LIMIT)
+        self.assertLessEqual(len(issue["seeds"]), HISTORY_LIMIT)
+        self.assertEqual(issue["scenario_ids"], sorted(set(issue["scenario_ids"])))
+        self.assertEqual(issue["seeds"], sorted(set(issue["seeds"])))
+        self.assertEqual(issue["regression_source"]["scenario_id"], "scenario-0000")
+        self.assertEqual(issue["regression_source"]["seed"], 0)
+        self.assertIn("scenario-0000", issue["scenario_ids"])
+        self.assertIn(0, issue["seeds"])
+        self.assertEqual(
+            issue["scenario_ids"],
+            ["scenario-0000", *(f"scenario-{value:04d}" for value in range(3, 258))],
+        )
+        self.assertEqual(issue["seeds"], [0, *range(3, 258)])
+
+        candidate_path = registry.export_regression_candidate(issue_id)
+        candidate_bytes = candidate_path.read_bytes()
+        candidate = json.loads(candidate_bytes)
+        self.assertEqual(candidate["seed"], 0)
+
+        old_scenario = self.scenario("scenario-9999", seed=9999)
+        registry.ingest(
+            self.report(self.failure(old_scenario.scenario_id, seed=old_scenario.seed)),
+            {old_scenario.scenario_id: self.context(old_scenario)},
+            observed_at="2026-07-16T00:00:00Z",
+        )
+
+        after_old = registry.load(issue_id)
+        self.assertEqual(after_old["regression_source"], issue["regression_source"])
+        self.assertIn("scenario-0000", after_old["scenario_ids"])
+        self.assertIn(0, after_old["seeds"])
+        self.assertEqual(after_old["scenario_ids"], sorted(set(after_old["scenario_ids"])))
+        self.assertEqual(after_old["seeds"], sorted(set(after_old["seeds"])))
+        self.assertLessEqual(len(after_old["scenario_ids"]), HISTORY_LIMIT)
+        self.assertLessEqual(len(after_old["seeds"]), HISTORY_LIMIT)
+        self.assertEqual(registry.export_regression_candidate(issue_id), candidate_path)
+        self.assertEqual(candidate_path.read_bytes(), candidate_bytes)
+
     def test_holdout_issue_does_not_persist_private_fields_or_values(self) -> None:
         secret = "PRIVATE-HOLDOUT-CONTENT"
         failure = self.failure(

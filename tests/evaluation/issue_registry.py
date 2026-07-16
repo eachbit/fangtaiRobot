@@ -199,9 +199,19 @@ def _merged_history(
     value: Any,
     *,
     limit: int | None = None,
+    required: Any = None,
 ) -> list[Any]:
-    result = sorted({*existing, value})
-    return result[-limit:] if limit is not None else result
+    values = {*existing, value}
+    if required is not None:
+        values.add(required)
+    if limit is None:
+        return sorted(values)
+    if required is None:
+        return sorted(values)[-limit:]
+    values.discard(required)
+    retained_count = max(limit - 1, 0)
+    retained = sorted(values)[-retained_count:] if retained_count else []
+    return sorted([*retained, required])
 
 
 def _validated_scenario_hash(value: Any) -> str:
@@ -1307,13 +1317,25 @@ class IssueRegistry:
         regression_source, health_bucket, intent, expectation = self._public_context(context)
         if expectation != result["expected"]:
             raise ValueError("issue expectation does not match its fingerprint")
-        result["scenario_ids"] = _merged_history(
-            result["scenario_ids"], failure.scenario_id, limit=HISTORY_LIMIT
+        latest = observed >= last_seen
+        selected_source = Scenario.from_dict(
+            regression_source if latest else result["regression_source"]
         )
-        result["seeds"] = _merged_history(result["seeds"], failure.seed, limit=HISTORY_LIMIT)
+        result["scenario_ids"] = _merged_history(
+            result["scenario_ids"],
+            failure.scenario_id,
+            limit=HISTORY_LIMIT,
+            required=selected_source.scenario_id,
+        )
+        result["seeds"] = _merged_history(
+            result["seeds"],
+            failure.seed,
+            limit=HISTORY_LIMIT,
+            required=selected_source.seed,
+        )
         result["health_buckets"] = _merged_history(result["health_buckets"], health_bucket)
         result["intents"] = _merged_history(result["intents"], intent)
-        if observed >= last_seen:
+        if latest:
             result["original_messages"] = list(failure.original_messages)
             result["minimized_messages"] = list(failure.minimized_messages)
             result["latest_evidence"] = violation.to_dict()["evidence"]
