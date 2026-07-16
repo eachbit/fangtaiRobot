@@ -554,6 +554,22 @@ class EvaluationRunnerTests(unittest.TestCase):
             self.assertNotIn("stale-case", runner.scenario_context)
             self.assertEqual(len(runner.scenario_context), 10)
 
+    def test_scenario_context_is_cleared_before_scenario_loading(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = self.build_runner(root / "out", corpus_root=root)
+            runner.run_count(10)
+            self.assertEqual(len(runner.scenario_context), 10)
+
+            regressions = root / "regressions"
+            regressions.mkdir()
+            (regressions / "invalid.json").write_text("{invalid", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "invalid.json"):
+                runner.run_count(10)
+
+            self.assertEqual(runner.scenario_context, {})
+
     def test_holdout_scenario_context_contains_only_hash(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

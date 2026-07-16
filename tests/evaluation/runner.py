@@ -768,6 +768,7 @@ class EvaluationRunner:
         return self.run_count(MODE_COUNTS[self.mode])
 
     def run_count(self, count: int) -> EvaluationReport:
+        self.scenario_context = {}
         if count < 10:
             raise ValueError("count must be at least 10")
         scenarios = self._load_scenarios(count)
