@@ -270,6 +270,39 @@ def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
             temporary_path.unlink()
 
 
+def _atomic_create_json(path: Path, value: Mapping[str, Any]) -> bool:
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            json.dump(
+                _json_value(value),
+                temporary,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            )
+            temporary.write("\n")
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        try:
+            os.link(temporary_path, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
 class IssueRegistry:
     def __init__(self, evaluation_root: str | os.PathLike[str]) -> None:
         lexical_root = Path(evaluation_root)
@@ -1206,6 +1239,72 @@ class IssueRegistry:
             if found is None:
                 raise FileNotFoundError(issue_id)
             return _defensive_copy(found[2])
+
+    def _regression_candidate_path(self, issue_id: str) -> Path:
+        candidates_root = self.evaluation_root / "candidates"
+        regressions_root = candidates_root / "regressions"
+        for path in (candidates_root, regressions_root):
+            if _is_link_or_reparse_point(path):
+                raise ValueError(
+                    "regression candidate path must not contain links or reparse points"
+                )
+            path.mkdir(exist_ok=True)
+            if _is_link_or_reparse_point(path) or not path.is_dir():
+                raise ValueError("regression candidate path must be a real directory")
+        _assert_no_link_ancestors(regressions_root)
+        resolved_evaluation = self.evaluation_root.resolve()
+        resolved_candidates = candidates_root.resolve()
+        resolved_regressions = regressions_root.resolve()
+        if resolved_candidates.parent != resolved_evaluation:
+            raise ValueError("candidates path escapes evaluation_root")
+        if resolved_regressions.parent != resolved_candidates:
+            raise ValueError("regressions path escapes candidates root")
+        path = regressions_root / f"{issue_id}.json"
+        if _is_link_or_reparse_point(path):
+            raise ValueError("regression candidate must not be a link or reparse point")
+        if path.resolve(strict=False).parent != resolved_regressions:
+            raise ValueError("regression candidate path escapes regressions root")
+        return path
+
+    @staticmethod
+    def _assert_matching_candidate(path: Path, candidate: Mapping[str, Any]) -> None:
+        if _is_link_or_reparse_point(path):
+            raise ValueError("regression candidate must not be a link or reparse point")
+        if not path.is_file():
+            raise ValueError("regression candidate path must be a regular file")
+        try:
+            existing = _strict_json_object_from_path(path)
+            Scenario.from_dict(existing)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise FileExistsError(
+                "regression candidate already exists with different content"
+            ) from exc
+        if existing != candidate:
+            raise FileExistsError(
+                "regression candidate already exists with different content"
+            )
+
+    def export_regression_candidate(self, issue_id: str) -> Path:
+        issue_id = _validate_issue_id(issue_id)
+        with self._locked():
+            found = self._find_issue(issue_id)
+            if found is None:
+                raise FileNotFoundError(issue_id)
+            issue = found[2]
+            if issue["holdout"]:
+                raise ValueError("holdout issues cannot be exported as regression candidates")
+
+            candidate_payload = _defensive_copy(issue["regression_source"])
+            candidate_payload["scenario_id"] = f"regression-{issue['fingerprint']}"
+            candidate_payload["messages"] = list(issue["minimized_messages"])
+            candidate = Scenario.from_dict(candidate_payload).to_dict()
+            path = self._regression_candidate_path(issue_id)
+            if path.exists() or path.is_symlink():
+                self._assert_matching_candidate(path, candidate)
+                return path
+            if not _atomic_create_json(path, candidate):
+                self._assert_matching_candidate(path, candidate)
+            return path
 
     @staticmethod
     def _validate_resolution_cycle(

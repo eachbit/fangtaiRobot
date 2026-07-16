@@ -11,6 +11,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+from scripts import manage_evaluation_issue as manage_issue_cli
 from scripts import run_autonomous_cycle as cli_module
 from scripts.run_autonomous_cycle import main
 from tests.evaluation import autonomous_cycle
@@ -971,6 +972,233 @@ class AutonomousCycleCliTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 2)
         cycle_runner.assert_not_called()
+
+
+class ManageEvaluationIssueCliTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.repository_root = Path(self.temporary_directory.name) / "repo"
+        self.repository_root.mkdir()
+        self.evaluation_root = self.repository_root / "artifacts" / "evaluation"
+
+    def create_issue(self) -> tuple[IssueRegistry, str]:
+        scenario = Scenario(
+            "scenario-cli",
+            HealthPersona("persona-cli", "single_condition"),
+            ("Plan dinner without peanuts.",),
+            MenuExpectation(forbidden_terms=("peanut",)),
+            17,
+            "hard_constraint",
+        )
+        failure = FailureRecord(
+            scenario.scenario_id,
+            scenario.seed,
+            "abc123",
+            scenario.messages,
+            ("No peanuts.",),
+            (
+                Violation(
+                    "constraint.forbidden_term",
+                    "blocking",
+                    "Blocked output.",
+                    {"dish_ids": [7]},
+                ),
+            ),
+            1.0,
+        )
+        registry = IssueRegistry(self.evaluation_root)
+        issue_ids = registry.ingest(
+            EvaluationReport(1, 0, (failure,), {}, {}, {}),
+            {
+                scenario.scenario_id: {
+                    "holdout": False,
+                    "health_bucket": scenario.persona.primary_bucket,
+                    "intent": scenario.intent,
+                    "expectation": scenario.expectation.to_dict(),
+                    "scenario": scenario.to_dict(),
+                }
+            },
+            observed_at="2026-07-16T01:02:03Z",
+        )
+        return registry, issue_ids[0]
+
+    def create_cycle(self, cycle_id: str, mode: str) -> Path:
+        run_cycle(
+            self.evaluation_root,
+            cycle_id,
+            mode,
+            1,
+            40,
+            runner_factory=RecordingFactory(),
+            registry=FakeRegistry(),
+            clock=StepClock(1.0, 1.125),
+            utc_now=lambda: "2026-07-16T01:02:03Z",
+            commit_sha="abc123",
+            repository_root=self.repository_root,
+        )
+        return self.evaluation_root / "cycles" / cycle_id / "cycle.json"
+
+    def test_cli_transitions_issue_with_strict_daily_cycle(self) -> None:
+        registry, issue_id = self.create_issue()
+        created_roots: list[Path] = []
+
+        def registry_factory(root: Path) -> IssueRegistry:
+            created_roots.append(Path(root))
+            return IssueRegistry(root)
+
+        verifying_output = io.StringIO()
+        with redirect_stdout(verifying_output):
+            verifying_code = manage_issue_cli.main(
+                [issue_id, "--status", "verifying"],
+                repository_root=self.repository_root,
+                registry_factory=registry_factory,
+            )
+        self.create_cycle("daily-verification", "daily")
+        resolved_output = io.StringIO()
+        with redirect_stdout(resolved_output):
+            resolved_code = manage_issue_cli.main(
+                [
+                    issue_id,
+                    "--status",
+                    "resolved",
+                    "--cycle-id",
+                    "daily-verification",
+                ],
+                repository_root=self.repository_root,
+                registry_factory=registry_factory,
+            )
+
+        self.assertEqual(verifying_code, 0)
+        self.assertEqual(resolved_code, 0)
+        self.assertEqual(registry.load(issue_id)["status"], "resolved")
+        self.assertEqual(created_roots, [self.evaluation_root, self.evaluation_root])
+        self.assertIn(
+            str(self.evaluation_root / "issues" / "verifying" / f"{issue_id}.json"),
+            verifying_output.getvalue(),
+        )
+        self.assertIn(
+            str(self.evaluation_root / "issues" / "resolved" / f"{issue_id}.json"),
+            resolved_output.getvalue(),
+        )
+
+    def test_cli_exports_regression_candidate(self) -> None:
+        _, issue_id = self.create_issue()
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            code = manage_issue_cli.main(
+                [issue_id, "--export-regression"],
+                repository_root=self.repository_root,
+                registry_factory=IssueRegistry,
+            )
+
+        candidate = (
+            self.evaluation_root
+            / "candidates"
+            / "regressions"
+            / f"{issue_id}.json"
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(candidate.is_file())
+        self.assertIn(str(candidate), output.getvalue())
+
+    def test_cli_resolution_requires_existing_cycle_and_rejects_quick_mode(self) -> None:
+        registry, issue_id = self.create_issue()
+        registry.set_status(issue_id, "verifying")
+
+        for arguments, expected_message in (
+            ([issue_id, "--status", "resolved"], "cycle"),
+            (
+                [
+                    issue_id,
+                    "--status",
+                    "resolved",
+                    "--cycle-id",
+                    "missing-cycle",
+                ],
+                "missing-cycle",
+            ),
+        ):
+            error = io.StringIO()
+            with redirect_stderr(error):
+                code = manage_issue_cli.main(
+                    arguments,
+                    repository_root=self.repository_root,
+                    registry_factory=IssueRegistry,
+                )
+            self.assertEqual(code, 2)
+            self.assertIn(expected_message, error.getvalue())
+            self.assertEqual(registry.load(issue_id)["status"], "verifying")
+
+        self.create_cycle("quick-verification", "quick")
+        error = io.StringIO()
+        with redirect_stderr(error):
+            code = manage_issue_cli.main(
+                [
+                    issue_id,
+                    "--status",
+                    "resolved",
+                    "--cycle-id",
+                    "quick-verification",
+                ],
+                repository_root=self.repository_root,
+                registry_factory=IssueRegistry,
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("daily or deep", error.getvalue())
+        self.assertEqual(registry.load(issue_id)["status"], "verifying")
+
+    def test_cli_rejects_invalid_cycle_schema_and_unsafe_cycle_id(self) -> None:
+        registry, issue_id = self.create_issue()
+        registry.set_status(issue_id, "verifying")
+        cycle_path = self.create_cycle("invalid-state", "daily")
+        state = json.loads(cycle_path.read_text(encoding="utf-8"))
+        state["unexpected"] = True
+        cycle_path.write_text(json.dumps(state), encoding="utf-8")
+
+        for cycle_id in ("invalid-state", "../outside"):
+            error = io.StringIO()
+            with redirect_stderr(error):
+                code = manage_issue_cli.main(
+                    [
+                        issue_id,
+                        "--status",
+                        "resolved",
+                        "--cycle-id",
+                        cycle_id,
+                    ],
+                    repository_root=self.repository_root,
+                    registry_factory=IssueRegistry,
+                )
+            self.assertEqual(code, 2)
+            self.assertTrue(error.getvalue())
+            self.assertEqual(registry.load(issue_id)["status"], "verifying")
+
+    def test_cli_returns_two_for_unknown_issue(self) -> None:
+        IssueRegistry(self.evaluation_root)
+        error = io.StringIO()
+        issue_id = "issue-0123456789abcdef01234567"
+
+        with redirect_stderr(error):
+            code = manage_issue_cli.main(
+                [issue_id, "--status", "verifying"],
+                repository_root=self.repository_root,
+                registry_factory=IssueRegistry,
+            )
+
+        self.assertEqual(code, 2)
+        self.assertIn(issue_id, error.getvalue())
+
+    def test_cli_requires_exactly_one_action_via_argparse(self) -> None:
+        issue_id = "issue-0123456789abcdef01234567"
+        for arguments in (
+            [issue_id],
+            [issue_id, "--status", "open", "--export-regression"],
+        ):
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                manage_issue_cli.main(arguments, repository_root=self.repository_root)
+            self.assertEqual(raised.exception.code, 2)
 
 
 if __name__ == "__main__":

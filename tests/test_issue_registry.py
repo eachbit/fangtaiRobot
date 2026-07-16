@@ -578,6 +578,131 @@ class IssueRegistryTests(unittest.TestCase):
         self.assertEqual(issue["latest_evidence"], {"dish_ids": [7]})
         self.assertEqual(Scenario.from_dict(issue["regression_source"]), scenario)
 
+    def test_public_issue_exports_strict_regression_candidate_idempotently(self) -> None:
+        expectation = MenuExpectation(
+            forbidden_terms=("peanut",),
+            dish_count=3,
+        )
+        scenario = Scenario(
+            scenario_id="scenario-multi-turn",
+            persona=HealthPersona("persona-1", "single_condition"),
+            messages=("Original scenario message.",),
+            expectation=expectation,
+            seed=41,
+            intent="hard_constraint",
+            dialogue_mode="multi_turn",
+        )
+        failure = self.failure(
+            "scenario-multi-turn",
+            seed=41,
+            minimized_messages=("No peanuts at dinner.",),
+            evidence={
+                "expectation": {"forbidden_terms": ["evidence-must-not-win"]},
+                "required_terms": ["also-not-an-expectation"],
+            },
+        )
+        registry = IssueRegistry(self.root)
+        issue_id = self.ingest_one(registry, failure, context=self.context(scenario))
+
+        first_path = registry.export_regression_candidate(issue_id)
+        first_bytes = first_path.read_bytes()
+        second_path = registry.export_regression_candidate(issue_id)
+        candidate = json.loads(first_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(first_path, second_path)
+        self.assertEqual(first_path.read_bytes(), first_bytes)
+        self.assertEqual(
+            first_path,
+            self.root / "candidates" / "regressions" / f"{issue_id}.json",
+        )
+        self.assertEqual(candidate["scenario_id"], f"regression-{issue_id[6:]}")
+        self.assertEqual(candidate["messages"], ["No peanuts at dinner."])
+        self.assertEqual(candidate["persona"], scenario.persona.to_dict())
+        self.assertEqual(candidate["intent"], scenario.intent)
+        self.assertEqual(candidate["dialogue_mode"], scenario.dialogue_mode)
+        self.assertEqual(candidate["seed"], scenario.seed)
+        self.assertEqual(candidate["expectation"], expectation.to_dict())
+        self.assertEqual(Scenario.from_dict(candidate).to_dict(), candidate)
+
+    def test_export_regression_candidate_rejects_holdout_without_writing(self) -> None:
+        failure = self.failure("private-case")
+        registry = IssueRegistry(self.root)
+        issue_id = self.ingest_one(
+            registry,
+            failure,
+            context={"holdout": True, "scenario_hash": "a" * 64},
+        )
+
+        with self.assertRaisesRegex(ValueError, "holdout"):
+            registry.export_regression_candidate(issue_id)
+
+        self.assertFalse((self.root / "candidates").exists())
+
+    def test_export_regression_candidate_strictly_validates_generated_scenario(self) -> None:
+        registry = IssueRegistry(self.root)
+        issue_id = self.ingest_one(registry)
+        real_from_dict = Scenario.from_dict
+
+        def reject_generated(payload: dict[str, object]) -> Scenario:
+            if str(payload.get("scenario_id", "")).startswith("regression-"):
+                raise ValueError("generated candidate is invalid")
+            return real_from_dict(payload)
+
+        with (
+            mock.patch.object(
+                issue_registry.Scenario,
+                "from_dict",
+                side_effect=reject_generated,
+            ),
+            self.assertRaisesRegex(ValueError, "generated candidate is invalid"),
+        ):
+            registry.export_regression_candidate(issue_id)
+
+        self.assertFalse((self.root / "candidates").exists())
+
+    def test_export_regression_candidate_rejects_different_existing_content(self) -> None:
+        registry = IssueRegistry(self.root)
+        issue_id = self.ingest_one(registry)
+        candidate_path = self.root / "candidates" / "regressions" / f"{issue_id}.json"
+        candidate_path.parent.mkdir(parents=True)
+        candidate_path.write_text('{"existing":true}\n', encoding="utf-8")
+
+        with self.assertRaisesRegex(FileExistsError, "different"):
+            registry.export_regression_candidate(issue_id)
+
+        self.assertEqual(candidate_path.read_text(encoding="utf-8"), '{"existing":true}\n')
+
+    def test_export_regression_candidate_rejects_linked_paths(self) -> None:
+        registry = IssueRegistry(self.root)
+        issue_id = self.ingest_one(registry)
+        outside = self.root.parent / "outside-candidates"
+        outside.mkdir()
+        candidates_root = self.root / "candidates"
+        if not self.make_directory_link(candidates_root, outside):
+            self.skipTest("directory symlinks and junctions are unavailable")
+
+        with self.assertRaisesRegex(ValueError, "link|reparse"):
+            registry.export_regression_candidate(issue_id)
+
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_export_regression_candidate_rejects_linked_destination_file(self) -> None:
+        registry = IssueRegistry(self.root)
+        issue_id = self.ingest_one(registry)
+        destination = self.root / "candidates" / "regressions" / f"{issue_id}.json"
+        destination.parent.mkdir(parents=True)
+        outside = self.root.parent / "outside-candidate.json"
+        outside.write_text('{"outside":true}\n', encoding="utf-8")
+        try:
+            destination.symlink_to(outside)
+        except OSError:
+            self.skipTest("file links are unavailable")
+
+        with self.assertRaisesRegex(ValueError, "link|reparse"):
+            registry.export_regression_candidate(issue_id)
+
+        self.assertEqual(outside.read_text(encoding="utf-8"), '{"outside":true}\n')
+
     def test_resolved_issue_recurrence_reopens_and_updates_index(self) -> None:
         registry = IssueRegistry(self.root)
         failure = self.failure()
@@ -1152,6 +1277,7 @@ class IssueRegistryTests(unittest.TestCase):
             None,
             {"status": "running", "mode": "daily", "issue_ids": []},
             {"status": "completed", "mode": "quick", "issue_ids": []},
+            {"status": "completed", "mode": "daily", "issue_ids": "not-an-array"},
             self.completed_cycle([issue_id]),
         )
         for cycle in invalid_cycles:
@@ -1163,10 +1289,11 @@ class IssueRegistryTests(unittest.TestCase):
                         verification_cycle=cycle,
                     )
 
+        deep_cycle = {**self.completed_cycle(), "mode": "deep"}
         resolved = registry.set_status(
             issue_id,
             "resolved",
-            verification_cycle=self.completed_cycle(),
+            verification_cycle=deep_cycle,
         )
         self.assertEqual(resolved["status"], "resolved")
         reopened = registry.set_status(issue_id, "open")
