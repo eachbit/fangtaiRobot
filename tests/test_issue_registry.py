@@ -352,10 +352,14 @@ class IssueRegistryTests(unittest.TestCase):
         registry = IssueRegistry(self.root)
         issue_id = self.ingest_one(registry)
         source = self.issue_path(self.root, issue_id, "open")
-        calls: list[Path] = []
+        calls: list[tuple[Path, tuple[int, int, Path] | None]] = []
 
-        def durable_unlink(path: Path) -> None:
-            calls.append(Path(path))
+        def durable_unlink(
+            path: Path,
+            *,
+            expected_parent_identity: tuple[int, int, Path] | None = None,
+        ) -> None:
+            calls.append((Path(path), expected_parent_identity))
             Path(path).unlink()
 
         with mock.patch.object(
@@ -366,9 +370,12 @@ class IssueRegistryTests(unittest.TestCase):
         ):
             registry.set_status(issue_id, "verifying")
 
-        self.assertIn(source, calls)
-        self.assertIn(registry._journal_path, calls)
-        self.assertLess(calls.index(source), calls.index(registry._journal_path))
+        paths = [path for path, _ in calls]
+        self.assertIn(source, paths)
+        self.assertIn(registry._journal_path, paths)
+        self.assertLess(paths.index(source), paths.index(registry._journal_path))
+        self.assertIsNotNone(calls[paths.index(source)][1])
+        self.assertIsNotNone(calls[paths.index(registry._journal_path)][1])
 
     def test_directory_fsync_ignores_only_supported_windows_errors(self) -> None:
         with (
@@ -721,6 +728,53 @@ class IssueRegistryTests(unittest.TestCase):
         self.assertEqual(issue["expected"], scenario.expectation.to_dict())
         self.assertEqual(issue["latest_evidence"], {"dish_ids": [7]})
         self.assertEqual(Scenario.from_dict(issue["regression_source"]), scenario)
+
+    def test_new_issue_rejects_context_source_id_or_seed_without_writes(self) -> None:
+        for index, field in enumerate(("scenario_id", "seed")):
+            with self.subTest(field=field):
+                root = self.root.parent / f"forged-new-{index}"
+                registry = IssueRegistry(root)
+                failure = self.failure()
+                context = self.context(self.scenario())
+                source = dict(context["scenario"])
+                source[field] = "scenario-forged" if field == "scenario_id" else 999
+                context["scenario"] = source
+                old_index = registry.index_path.read_bytes()
+
+                with self.assertRaisesRegex(ValueError, field):
+                    registry.ingest(
+                        self.report(failure),
+                        {failure.scenario_id: context},
+                        observed_at="2026-07-16T00:00:00Z",
+                    )
+
+                self.assertEqual(registry.index_path.read_bytes(), old_index)
+                self.assertEqual(list(registry.status_directories["open"].glob("*.json")), [])
+
+    def test_merge_rejects_context_source_id_or_seed_without_writes(self) -> None:
+        for index, field in enumerate(("scenario_id", "seed")):
+            with self.subTest(field=field):
+                root = self.root.parent / f"forged-merge-{index}"
+                registry = IssueRegistry(root)
+                failure = self.failure()
+                issue_id = self.ingest_one(registry, failure)
+                issue_path = self.issue_path(root, issue_id)
+                old_issue = issue_path.read_bytes()
+                old_index = registry.index_path.read_bytes()
+                context = self.context(self.scenario())
+                source = dict(context["scenario"])
+                source[field] = "scenario-forged" if field == "scenario_id" else 999
+                context["scenario"] = source
+
+                with self.assertRaisesRegex(ValueError, field):
+                    registry.ingest(
+                        self.report(failure),
+                        {failure.scenario_id: context},
+                        observed_at="2026-07-17T00:00:00Z",
+                    )
+
+                self.assertEqual(issue_path.read_bytes(), old_issue)
+                self.assertEqual(registry.index_path.read_bytes(), old_index)
 
     def test_public_issue_exports_strict_regression_candidate_idempotently(self) -> None:
         expectation = MenuExpectation(
@@ -1359,6 +1413,58 @@ class IssueRegistryTests(unittest.TestCase):
         recovered = IssueRegistry(self.root)
         self.assertEqual(recovered.load(issue_id)["status"], "open")
 
+    def test_set_status_rejects_source_parent_swap_before_unlink(self) -> None:
+        registry = IssueRegistry(self.root)
+        issue_id = self.ingest_one(registry)
+        source = self.issue_path(self.root, issue_id, "open")
+        destination = self.issue_path(self.root, issue_id, "verifying")
+        source_directory = source.parent
+        original_directory = source_directory.with_name("open-original")
+        outside = self.root.parent / "outside-open-swap"
+        outside.mkdir()
+        outside_source = outside / source.name
+        outside_bytes = b"outside source must remain unchanged"
+        outside_source.write_bytes(outside_bytes)
+        old_issue = source.read_bytes()
+        old_index = registry.index_path.read_bytes()
+        real_atomic_write = issue_registry._atomic_write_json
+        swapped = False
+
+        def write_then_swap(path: Path, value: object) -> None:
+            nonlocal swapped
+            real_atomic_write(path, value)
+            if path == destination and not swapped:
+                source_directory.rename(original_directory)
+                if not self.make_directory_link(source_directory, outside):
+                    original_directory.rename(source_directory)
+                    self.skipTest("directory links are unavailable")
+                swapped = True
+
+        try:
+            with (
+                mock.patch.object(
+                    issue_registry,
+                    "_atomic_write_json",
+                    side_effect=write_then_swap,
+                ),
+                self.assertRaisesRegex(ValueError, "changed|link|reparse"),
+            ):
+                registry.set_status(issue_id, "verifying")
+        finally:
+            if swapped:
+                if source_directory.is_symlink():
+                    source_directory.unlink()
+                else:
+                    os.rmdir(source_directory)
+                original_directory.rename(source_directory)
+
+        self.assertEqual(outside_source.read_bytes(), outside_bytes)
+        recovered = IssueRegistry(self.root)
+        self.assertEqual(source.read_bytes(), old_issue)
+        self.assertFalse(destination.exists())
+        self.assertEqual(recovered.index_path.read_bytes(), old_index)
+        self.assertEqual(recovered.load(issue_id)["status"], "open")
+
     def test_reopen_source_unlink_failure_restores_resolved_issue(self) -> None:
         registry = IssueRegistry(self.root)
         failure = self.failure()
@@ -1394,6 +1500,71 @@ class IssueRegistryTests(unittest.TestCase):
         self.assertFalse(destination.exists())
         self.assertEqual(index_path.read_text(encoding="utf-8"), old_index)
         recovered = IssueRegistry(self.root)
+        issue = recovered.load(issue_id)
+        self.assertEqual(issue["status"], "resolved")
+        self.assertEqual(issue["occurrences"], 1)
+
+    def test_reopen_rejects_source_parent_swap_before_unlink(self) -> None:
+        registry = IssueRegistry(self.root)
+        failure = self.failure()
+        issue_id = self.ingest_one(registry, failure)
+        registry.set_status(issue_id, "verifying")
+        registry.set_status(
+            issue_id,
+            "resolved",
+            verification_cycle=self.completed_cycle(),
+        )
+        source = self.issue_path(self.root, issue_id, "resolved")
+        destination = self.issue_path(self.root, issue_id, "open")
+        source_directory = source.parent
+        original_directory = source_directory.with_name("resolved-original")
+        outside = self.root.parent / "outside-resolved-swap"
+        outside.mkdir()
+        outside_source = outside / source.name
+        outside_bytes = b"outside resolved source must remain unchanged"
+        outside_source.write_bytes(outside_bytes)
+        old_issue = source.read_bytes()
+        old_index = registry.index_path.read_bytes()
+        real_atomic_write = issue_registry._atomic_write_json
+        swapped = False
+
+        def write_then_swap(path: Path, value: object) -> None:
+            nonlocal swapped
+            real_atomic_write(path, value)
+            if path == destination and not swapped:
+                source_directory.rename(original_directory)
+                if not self.make_directory_link(source_directory, outside):
+                    original_directory.rename(source_directory)
+                    self.skipTest("directory links are unavailable")
+                swapped = True
+
+        try:
+            with (
+                mock.patch.object(
+                    issue_registry,
+                    "_atomic_write_json",
+                    side_effect=write_then_swap,
+                ),
+                self.assertRaisesRegex(ValueError, "changed|link|reparse"),
+            ):
+                registry.ingest(
+                    self.report(failure),
+                    {failure.scenario_id: self.context()},
+                    observed_at="2026-07-17T00:00:00Z",
+                )
+        finally:
+            if swapped:
+                if source_directory.is_symlink():
+                    source_directory.unlink()
+                else:
+                    os.rmdir(source_directory)
+                original_directory.rename(source_directory)
+
+        self.assertEqual(outside_source.read_bytes(), outside_bytes)
+        recovered = IssueRegistry(self.root)
+        self.assertEqual(source.read_bytes(), old_issue)
+        self.assertFalse(destination.exists())
+        self.assertEqual(recovered.index_path.read_bytes(), old_index)
         issue = recovered.load(issue_id)
         self.assertEqual(issue["status"], "resolved")
         self.assertEqual(issue["occurrences"], 1)
@@ -1581,20 +1752,18 @@ class IssueRegistryTests(unittest.TestCase):
         with second._locked():
             self.assertTrue(second._lock_path.is_file())
 
-    def test_release_error_still_closes_lock_descriptor(self) -> None:
+    def test_release_error_is_ignored_when_close_releases_descriptor(self) -> None:
         registry = IssueRegistry(self.root)
         second = IssueRegistry(self.root)
         opened: list[int] = []
         real_open = registry._open_lock_descriptor
-        real_release = registry._release_advisory_lock
 
         def capture_open() -> int:
             descriptor = real_open()
             opened.append(descriptor)
             return descriptor
 
-        def release_then_fail(descriptor: int) -> None:
-            real_release(descriptor)
+        def fail_release(descriptor: int) -> None:
             raise OSError(errno.EIO, "simulated release failure")
 
         with (
@@ -1602,10 +1771,9 @@ class IssueRegistryTests(unittest.TestCase):
             mock.patch.object(
                 registry,
                 "_release_advisory_lock",
-                side_effect=release_then_fail,
+                side_effect=fail_release,
             ),
             mock.patch.object(issue_registry.os, "close", wraps=os.close) as close,
-            self.assertRaisesRegex(OSError, "release failure"),
         ):
             with registry._locked():
                 pass
@@ -1622,6 +1790,40 @@ class IssueRegistryTests(unittest.TestCase):
                 os.close(descriptor)
             except OSError:
                 pass
+
+    def test_release_error_with_close_failure_raises_close_error(self) -> None:
+        registry = IssueRegistry(self.root)
+        opened: list[int] = []
+        real_open = registry._open_lock_descriptor
+        real_close = os.close
+
+        def capture_open() -> int:
+            descriptor = real_open()
+            opened.append(descriptor)
+            return descriptor
+
+        def fail_release(descriptor: int) -> None:
+            raise OSError(errno.EIO, "simulated release failure")
+
+        def close_then_fail(descriptor: int) -> None:
+            real_close(descriptor)
+            raise OSError(errno.EIO, "simulated close failure")
+
+        with (
+            mock.patch.object(registry, "_open_lock_descriptor", side_effect=capture_open),
+            mock.patch.object(
+                registry,
+                "_release_advisory_lock",
+                side_effect=fail_release,
+            ),
+            mock.patch.object(issue_registry.os, "close", side_effect=close_then_fail),
+            self.assertRaisesRegex(OSError, "close failure"),
+        ):
+            with registry._locked():
+                pass
+
+        with self.assertRaises(OSError):
+            os.fstat(opened[-1])
 
     def test_release_error_does_not_mask_business_error_and_still_closes(self) -> None:
         registry = IssueRegistry(self.root)

@@ -314,8 +314,36 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _durable_unlink(path: Path) -> None:
-    path.unlink()
+def _durable_unlink(
+    path: Path,
+    *,
+    expected_parent_identity: tuple[int, int, Path] | None = None,
+) -> None:
+    parent = path.parent
+    if expected_parent_identity is None:
+        path.unlink()
+        _fsync_directory(parent)
+        return
+    parent_identity = expected_parent_identity
+    _assert_directory_identity(parent, parent_identity)
+    if os.unlink in os.supports_dir_fd:
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(parent, flags)
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or (metadata.st_dev, metadata.st_ino) != parent_identity[:2]
+            ):
+                raise ValueError("unlink parent directory changed before deletion")
+            os.unlink(path.name, dir_fd=descriptor)
+        finally:
+            os.close(descriptor)
+    else:
+        _assert_directory_identity(parent, parent_identity)
+        path.unlink()
+    _assert_directory_identity(parent, parent_identity)
     _fsync_directory(path.parent)
 
 
@@ -625,8 +653,6 @@ class IssueRegistry:
                     if release_error is not None:
                         raise close_error from release_error
                     raise close_error
-                if release_error is not None:
-                    raise release_error
 
     def _open_lock_descriptor(self) -> int:
         flags = os.O_CREAT | os.O_RDWR
@@ -1118,15 +1144,35 @@ class IssueRegistry:
         value = _strict_json_object_from_path(path)
         return self._validate_transaction_snapshot(relative_path, value)
 
-    def _begin_transaction(self, paths: Iterable[Path]) -> None:
+    @staticmethod
+    def _transaction_parent_identities(
+        paths: Iterable[Path],
+    ) -> dict[Path, tuple[int, int, Path]]:
+        parents = sorted({path.parent for path in paths}, key=str)
+        return {parent: _directory_identity(parent) for parent in parents}
+
+    @staticmethod
+    def _assert_transaction_parent_identities(
+        identities: Mapping[Path, tuple[int, int, Path]],
+    ) -> None:
+        for parent, identity in identities.items():
+            _assert_directory_identity(parent, identity)
+
+    def _begin_transaction(
+        self,
+        paths: Iterable[Path],
+    ) -> dict[Path, tuple[int, int, Path]]:
         if self._journal_path.exists() or self._journal_path.is_symlink():
             raise ValueError("an issue registry transaction is already active")
         relative_paths = sorted({self._transaction_relative_path(path) for path in paths})
         if "index.json" not in relative_paths:
             raise ValueError("transaction must include index.json")
+        transaction_paths = [
+            self._transaction_path(relative_path) for relative_path in relative_paths
+        ]
+        parent_identities = self._transaction_parent_identities(transaction_paths)
         files = []
-        for relative_path in relative_paths:
-            path = self._transaction_path(relative_path)
+        for relative_path, path in zip(relative_paths, transaction_paths, strict=True):
             before = self._read_transaction_snapshot(relative_path, path)
             if relative_path == "index.json" and before is None:
                 raise ValueError("transaction requires an existing index")
@@ -1135,30 +1181,40 @@ class IssueRegistry:
             self._journal_path,
             {"schema_version": 1, "files": files},
         )
+        self._assert_transaction_parent_identities(parent_identities)
+        return parent_identities
 
     def _restore_transaction_file(
         self,
         relative_path: str,
         path: Path,
         before: dict[str, Any] | None,
+        parent_identity: tuple[int, int, Path],
     ) -> None:
+        _assert_directory_identity(path.parent, parent_identity)
         exists = path.exists() or path.is_symlink()
         if exists and _is_link_or_reparse_point(path):
             raise ValueError("transaction file must not be a link or reparse point")
         if before is None:
             if exists:
-                _durable_unlink(path)
+                _durable_unlink(
+                    path,
+                    expected_parent_identity=parent_identity,
+                )
             return
         if exists:
             current = self._read_transaction_snapshot(relative_path, path)
             if current == before:
                 return
         _atomic_write_json(path, before)
+        _assert_directory_identity(path.parent, parent_identity)
 
     def _cleanup_observation_transaction_temps(
         self,
         entries: list[tuple[str, Path, dict[str, Any] | None]],
+        parent_identity: tuple[int, int, Path],
     ) -> None:
+        _assert_directory_identity(self.observations_root, parent_identity)
         allowed_hashes = {
             Path(relative_path).stem
             for relative_path, _, _ in entries
@@ -1182,31 +1238,69 @@ class IssueRegistry:
                 )
             if not stat.S_ISREG(metadata.st_mode):
                 raise ValueError("observation temporary path must be a regular file")
-            _durable_unlink(path)
+            _durable_unlink(
+                path,
+                expected_parent_identity=parent_identity,
+            )
 
-    def _recover_transaction(self) -> None:
+    def _recover_transaction(
+        self,
+        parent_identities: Mapping[Path, tuple[int, int, Path]] | None = None,
+    ) -> None:
         if not self._journal_path.exists() and not self._journal_path.is_symlink():
             return
         entries = self._load_transaction_journal()
-        self._cleanup_observation_transaction_temps(entries)
+        identities = (
+            dict(parent_identities)
+            if parent_identities is not None
+            else self._transaction_parent_identities(
+                [path for _, path, _ in entries]
+            )
+        )
+        required_parents = {path.parent for _, path, _ in entries}
+        if not required_parents.issubset(identities):
+            raise ValueError("transaction parent identity is missing")
+        self._assert_transaction_parent_identities(identities)
+        observations_identity = identities.get(self.observations_root)
+        if observations_identity is not None:
+            self._cleanup_observation_transaction_temps(
+                entries,
+                observations_identity,
+            )
         for relative_path, path, before in sorted(
             entries,
             key=lambda entry: entry[0] == "index.json",
         ):
-            self._restore_transaction_file(relative_path, path, before)
+            self._restore_transaction_file(
+                relative_path,
+                path,
+                before,
+                identities[path.parent],
+            )
+        self._assert_transaction_parent_identities(identities)
         self._validate_index_matches_files()
-        _durable_unlink(self._journal_path)
+        _durable_unlink(
+            self._journal_path,
+            expected_parent_identity=identities[self.issues_root],
+        )
 
     @contextmanager
-    def _transaction(self, paths: Iterable[Path]) -> Iterator[None]:
-        self._begin_transaction(paths)
+    def _transaction(
+        self,
+        paths: Iterable[Path],
+    ) -> Iterator[dict[Path, tuple[int, int, Path]]]:
+        parent_identities = self._begin_transaction(paths)
         try:
-            yield
+            yield parent_identities
+            self._assert_transaction_parent_identities(parent_identities)
             self._validate_index_matches_files()
-            _durable_unlink(self._journal_path)
+            _durable_unlink(
+                self._journal_path,
+                expected_parent_identity=parent_identities[self.issues_root],
+            )
         except BaseException as error:
             try:
-                self._recover_transaction()
+                self._recover_transaction(parent_identities)
             except BaseException as recovery_error:
                 raise recovery_error from error
             raise
@@ -1214,6 +1308,7 @@ class IssueRegistry:
     def _public_context(
         self,
         context: Mapping[str, Any],
+        failure: FailureRecord,
     ) -> tuple[dict[str, Any], str, str, dict[str, Any]]:
         if context.get("holdout") is not False:
             raise ValueError("public scenario context must set holdout to false")
@@ -1221,6 +1316,10 @@ class IssueRegistry:
         if type(scenario_payload) is not dict:
             raise ValueError("public scenario context must contain a strict Scenario dict")
         scenario = Scenario.from_dict(scenario_payload)
+        if scenario.scenario_id != failure.scenario_id:
+            raise ValueError("scenario context scenario_id does not match FailureRecord")
+        if scenario.seed != failure.seed:
+            raise ValueError("scenario context seed does not match FailureRecord")
         health_bucket = context.get("health_bucket")
         intent = context.get("intent")
         expectation = _json_value(context.get("expectation"))
@@ -1262,7 +1361,10 @@ class IssueRegistry:
                 "occurrences": 1,
             }
 
-        regression_source, health_bucket, intent, expectation = self._public_context(context)
+        regression_source, health_bucket, intent, expectation = self._public_context(
+            context,
+            failure,
+        )
         return {
             "schema_version": _SCHEMA_VERSION,
             "issue_id": issue_id,
@@ -1314,7 +1416,10 @@ class IssueRegistry:
                 raise ValueError("holdout scenario hash does not match issue fingerprint")
             return result
 
-        regression_source, health_bucket, intent, expectation = self._public_context(context)
+        regression_source, health_bucket, intent, expectation = self._public_context(
+            context,
+            failure,
+        )
         if expectation != result["expected"]:
             raise ValueError("issue expectation does not match its fingerprint")
         latest = observed >= last_seen
@@ -1449,14 +1554,17 @@ class IssueRegistry:
                 for source in sources.values()
                 if source is not None
             )
-            with self._transaction(transaction_paths):
+            with self._transaction(transaction_paths) as parent_identities:
                 for issue_id, issue in sorted(working.items()):
                     _atomic_write_json(destinations[issue_id], issue)
                 if marker_path is not None and marker is not None:
                     _atomic_write_json(marker_path, marker)
                 for issue_id, source in sources.items():
                     if source is not None and source[1] != destinations[issue_id]:
-                        _durable_unlink(source[1])
+                        _durable_unlink(
+                            source[1],
+                            expected_parent_identity=parent_identities[source[1].parent],
+                        )
                 self._rebuild_index()
 
         return issue_ids
@@ -1608,8 +1716,13 @@ class IssueRegistry:
                 expected_status=status,
             )
             destination = self._issue_path(issue_id, status)
-            with self._transaction((self.index_path, source, destination)):
+            with self._transaction(
+                (self.index_path, source, destination)
+            ) as parent_identities:
                 _atomic_write_json(destination, updated)
-                _durable_unlink(source)
+                _durable_unlink(
+                    source,
+                    expected_parent_identity=parent_identities[source.parent],
+                )
                 self._rebuild_index()
             return _defensive_copy(updated)
