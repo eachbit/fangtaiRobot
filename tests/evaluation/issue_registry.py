@@ -905,9 +905,18 @@ class IssueRegistry:
                 return
         _atomic_write_json(path, before)
 
-    def _cleanup_observation_transaction_temps(self) -> None:
+    def _cleanup_observation_transaction_temps(
+        self,
+        entries: list[tuple[str, Path, dict[str, Any] | None]],
+    ) -> None:
+        allowed_hashes = {
+            Path(relative_path).stem
+            for relative_path, _, _ in entries
+            if relative_path.startswith("observations/")
+        }
         for path in sorted(self.observations_root.iterdir()):
-            if _OBSERVATION_TEMP_PATTERN.fullmatch(path.name) is None:
+            match = _OBSERVATION_TEMP_PATTERN.fullmatch(path.name)
+            if match is None or match.group(1) not in allowed_hashes:
                 continue
             try:
                 metadata = path.lstat()
@@ -929,7 +938,7 @@ class IssueRegistry:
         if not self._journal_path.exists() and not self._journal_path.is_symlink():
             return
         entries = self._load_transaction_journal()
-        self._cleanup_observation_transaction_temps()
+        self._cleanup_observation_transaction_temps(entries)
         for relative_path, path, before in sorted(
             entries,
             key=lambda entry: entry[0] == "index.json",

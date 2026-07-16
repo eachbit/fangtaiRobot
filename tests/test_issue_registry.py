@@ -414,6 +414,25 @@ class IssueRegistryTests(unittest.TestCase):
         issue_id = self.ingest_one(recovered)
         self.assertEqual(recovered.load(issue_id)["occurrences"], 1)
 
+    def test_recovery_preserves_matching_temp_for_marker_absent_from_journal(self) -> None:
+        registry = IssueRegistry(self.root)
+        self._begin_empty_observation_transaction(
+            registry,
+            "cycle-temp:allowlisted",
+        )
+        unrelated_marker = registry._observation_path("cycle-temp:unrelated")
+        unrelated_temp = registry.observations_root / (
+            f".{unrelated_marker.name}.unknown.tmp"
+        )
+        original = b"unrelated marker temp bytes\x00\xff"
+        unrelated_temp.write_bytes(original)
+
+        with self.assertRaisesRegex(ValueError, "invalid observation marker filename"):
+            IssueRegistry(self.root)
+
+        self.assertEqual(unrelated_temp.read_bytes(), original)
+        self.assertTrue(registry._journal_path.is_file())
+
     def test_recovery_does_not_delete_unknown_temp_file(self) -> None:
         registry = IssueRegistry(self.root)
         self._begin_empty_observation_transaction(
