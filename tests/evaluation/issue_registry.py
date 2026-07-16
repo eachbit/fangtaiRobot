@@ -27,6 +27,9 @@ _SCENARIO_HASH_PATTERN = re.compile(
     r"(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z"
 )
 _OBSERVATION_HASH_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+_OBSERVATION_TEMP_PATTERN = re.compile(
+    r"\.([0-9a-f]{64})\.json\.[^.\\/]+\.tmp\Z"
+)
 _LOCK_RETRIES = 100
 _LOCK_RETRY_DELAY_SECONDS = 0.01
 _PUBLIC_FIELDS = frozenset(
@@ -902,10 +905,31 @@ class IssueRegistry:
                 return
         _atomic_write_json(path, before)
 
+    def _cleanup_observation_transaction_temps(self) -> None:
+        for path in sorted(self.observations_root.iterdir()):
+            if _OBSERVATION_TEMP_PATTERN.fullmatch(path.name) is None:
+                continue
+            try:
+                metadata = path.lstat()
+            except FileNotFoundError:
+                continue
+            reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+            attributes = getattr(metadata, "st_file_attributes", 0)
+            if stat.S_ISLNK(metadata.st_mode) or (
+                reparse_flag and attributes & reparse_flag
+            ):
+                raise ValueError(
+                    "observation temporary file must not be a link or reparse point"
+                )
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("observation temporary path must be a regular file")
+            path.unlink()
+
     def _recover_transaction(self) -> None:
         if not self._journal_path.exists() and not self._journal_path.is_symlink():
             return
         entries = self._load_transaction_journal()
+        self._cleanup_observation_transaction_temps()
         for relative_path, path, before in sorted(
             entries,
             key=lambda entry: entry[0] == "index.json",

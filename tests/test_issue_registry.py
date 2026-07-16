@@ -379,6 +379,79 @@ class IssueRegistryTests(unittest.TestCase):
 
         self.assertTrue(registry._journal_path.is_file())
 
+    def _begin_empty_observation_transaction(
+        self,
+        registry: IssueRegistry,
+        observation_id: str,
+    ) -> tuple[Path, dict[str, object]]:
+        observation_hash = hashlib.sha256(observation_id.encode("utf-8")).hexdigest()
+        marker_path = registry._observation_path(observation_id)
+        marker = {
+            "schema_version": 1,
+            "observation_hash": observation_hash,
+            "issue_ids": [],
+        }
+        registry._begin_transaction((registry.index_path, marker_path))
+        issue_registry._atomic_write_json(marker_path, marker)
+        return marker_path, marker
+
+    def test_recovery_removes_exact_observation_atomic_temp_file(self) -> None:
+        registry = IssueRegistry(self.root)
+        marker_path, _ = self._begin_empty_observation_transaction(
+            registry,
+            "cycle-temp:round:0",
+        )
+        temporary_path = registry.observations_root / (
+            f".{marker_path.name}.deadbeef.tmp"
+        )
+        temporary_path.write_text("partial marker", encoding="utf-8")
+
+        recovered = IssueRegistry(self.root)
+
+        self.assertFalse(temporary_path.exists())
+        self.assertFalse(marker_path.exists())
+        self.assertFalse(recovered._journal_path.exists())
+        issue_id = self.ingest_one(recovered)
+        self.assertEqual(recovered.load(issue_id)["occurrences"], 1)
+
+    def test_recovery_does_not_delete_unknown_temp_file(self) -> None:
+        registry = IssueRegistry(self.root)
+        self._begin_empty_observation_transaction(
+            registry,
+            "cycle-temp:round:1",
+        )
+        unknown = registry.observations_root / "unknown.tmp"
+        unknown.write_text("do not delete", encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "invalid observation marker filename"):
+            IssueRegistry(self.root)
+
+        self.assertEqual(unknown.read_text(encoding="utf-8"), "do not delete")
+        self.assertTrue(registry._journal_path.is_file())
+
+    def test_recovery_rejects_matching_observation_temp_symlink(self) -> None:
+        registry = IssueRegistry(self.root)
+        marker_path, _ = self._begin_empty_observation_transaction(
+            registry,
+            "cycle-temp:round:2",
+        )
+        outside = Path(self.temporary_directory.name) / "outside-temp-target"
+        outside.write_text("outside unchanged", encoding="utf-8")
+        temporary_path = registry.observations_root / (
+            f".{marker_path.name}.symlink.tmp"
+        )
+        try:
+            temporary_path.symlink_to(outside)
+        except OSError:
+            self.skipTest("file links are unavailable")
+
+        with self.assertRaisesRegex(ValueError, "link|reparse"):
+            IssueRegistry(self.root)
+
+        self.assertTrue(temporary_path.is_symlink())
+        self.assertEqual(outside.read_text(encoding="utf-8"), "outside unchanged")
+        self.assertTrue(registry._journal_path.is_file())
+
     def test_same_root_cause_merges_across_seed_commit_timing_and_error_text(self) -> None:
         registry = IssueRegistry(self.root)
         first = self.failure(evidence={"detail": "first"})
