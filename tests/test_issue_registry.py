@@ -342,13 +342,13 @@ class IssueRegistryTests(unittest.TestCase):
         )
         first_context = {
             "holdout": True,
-            "scenario_hash": "same-holdout-hash",
+            "scenario_hash": "a" * 64,
             "expectation": {"private": "first"},
             "intent": "private-first",
         }
         second_context = {
             "holdout": True,
-            "scenario_hash": "same-holdout-hash",
+            "scenario_hash": "a" * 64,
             "expectation": {"private": "second"},
             "intent": "private-second",
         }
@@ -357,6 +357,16 @@ class IssueRegistryTests(unittest.TestCase):
             issue_fingerprint(first, first.violations[0], first_context),
             issue_fingerprint(second, second.violations[0], second_context),
         )
+
+    def test_holdout_scenario_hash_rejects_private_plaintext(self) -> None:
+        failure = self.failure("private-case")
+        context = {
+            "holdout": True,
+            "scenario_hash": "private scenario description",
+        }
+
+        with self.assertRaisesRegex(ValueError, "hexadecimal digest"):
+            issue_fingerprint(failure, failure.violations[0], context)
 
     def test_invalid_issue_identifiers_are_rejected(self) -> None:
         registry = IssueRegistry(self.root)
@@ -437,6 +447,167 @@ class IssueRegistryTests(unittest.TestCase):
 
         self.assertEqual(index_path.read_text(encoding="utf-8"), old_index)
         self.assertIsInstance(json.loads(old_index), dict)
+
+    def test_batch_ingest_second_issue_write_failure_rolls_back_all_files(self) -> None:
+        registry = IssueRegistry(self.root)
+        index_path = self.root / "issues" / "index.json"
+        old_index = index_path.read_text(encoding="utf-8")
+        first = self.failure("scenario-a", code="blocking.a")
+        second = self.failure("scenario-b", code="blocking.b")
+        contexts = {
+            "scenario-a": self.context(self.scenario("scenario-a")),
+            "scenario-b": self.context(self.scenario("scenario-b")),
+        }
+        real_atomic_write = issue_registry._atomic_write_json
+        issue_writes = 0
+
+        def fail_second_issue_write(path: Path, value: object) -> None:
+            nonlocal issue_writes
+            if path.parent == registry.status_directories["open"]:
+                issue_writes += 1
+                if issue_writes == 2:
+                    raise OSError("simulated second issue write failure")
+            real_atomic_write(path, value)
+
+        with mock.patch.object(
+            issue_registry,
+            "_atomic_write_json",
+            side_effect=fail_second_issue_write,
+        ):
+            with self.assertRaisesRegex(OSError, "second issue write failure"):
+                registry.ingest(
+                    self.report(first, second),
+                    contexts,
+                    observed_at="2026-07-16T00:00:00Z",
+                )
+
+        self.assertEqual(list(registry.status_directories["open"].glob("*.json")), [])
+        self.assertEqual(index_path.read_text(encoding="utf-8"), old_index)
+        recovered = IssueRegistry(self.root)
+        self.assertEqual(list(recovered.status_directories["open"].glob("*.json")), [])
+
+    def test_existing_issue_index_failure_restores_issue_and_index_exactly(self) -> None:
+        registry = IssueRegistry(self.root)
+        issue_id = self.ingest_one(registry)
+        issue_path = self.issue_path(self.root, issue_id)
+        index_path = self.root / "issues" / "index.json"
+        old_issue = issue_path.read_text(encoding="utf-8")
+        old_index = index_path.read_text(encoding="utf-8")
+        real_replace = os.replace
+        failed = False
+
+        def fail_first_index_replace(source: object, destination: object) -> None:
+            nonlocal failed
+            if Path(destination) == index_path and not failed:
+                failed = True
+                raise OSError("simulated existing issue index failure")
+            real_replace(source, destination)
+
+        with mock.patch.object(
+            issue_registry.os,
+            "replace",
+            side_effect=fail_first_index_replace,
+        ):
+            with self.assertRaisesRegex(OSError, "existing issue index failure"):
+                self.ingest_one(
+                    registry,
+                    observed_at="2026-07-17T00:00:00Z",
+                )
+
+        self.assertEqual(issue_path.read_text(encoding="utf-8"), old_issue)
+        self.assertEqual(index_path.read_text(encoding="utf-8"), old_index)
+        recovered = IssueRegistry(self.root)
+        self.assertEqual(recovered.load(issue_id)["occurrences"], 1)
+
+    def test_set_status_source_unlink_failure_restores_original_state(self) -> None:
+        registry = IssueRegistry(self.root)
+        issue_id = self.ingest_one(registry)
+        source = self.issue_path(self.root, issue_id, "open")
+        destination = self.issue_path(self.root, issue_id, "verifying")
+        index_path = self.root / "issues" / "index.json"
+        old_issue = source.read_text(encoding="utf-8")
+        old_index = index_path.read_text(encoding="utf-8")
+        path_type = type(source)
+        real_unlink = path_type.unlink
+
+        def fail_source_unlink(path: Path, *args: object, **kwargs: object) -> None:
+            if path == source:
+                raise PermissionError("simulated source unlink failure")
+            real_unlink(path, *args, **kwargs)
+
+        with mock.patch.object(path_type, "unlink", new=fail_source_unlink):
+            with self.assertRaisesRegex(PermissionError, "source unlink failure"):
+                registry.set_status(issue_id, "verifying")
+
+        self.assertEqual(source.read_text(encoding="utf-8"), old_issue)
+        self.assertFalse(destination.exists())
+        self.assertEqual(index_path.read_text(encoding="utf-8"), old_index)
+        recovered = IssueRegistry(self.root)
+        self.assertEqual(recovered.load(issue_id)["status"], "open")
+
+    def test_reopen_source_unlink_failure_restores_resolved_issue(self) -> None:
+        registry = IssueRegistry(self.root)
+        failure = self.failure()
+        issue_id = self.ingest_one(registry, failure)
+        registry.set_status(issue_id, "verifying")
+        registry.set_status(
+            issue_id,
+            "resolved",
+            verification_cycle=self.completed_cycle(),
+        )
+        source = self.issue_path(self.root, issue_id, "resolved")
+        destination = self.issue_path(self.root, issue_id, "open")
+        index_path = self.root / "issues" / "index.json"
+        old_issue = source.read_text(encoding="utf-8")
+        old_index = index_path.read_text(encoding="utf-8")
+        path_type = type(source)
+        real_unlink = path_type.unlink
+
+        def fail_source_unlink(path: Path, *args: object, **kwargs: object) -> None:
+            if path == source:
+                raise PermissionError("simulated reopen unlink failure")
+            real_unlink(path, *args, **kwargs)
+
+        with mock.patch.object(path_type, "unlink", new=fail_source_unlink):
+            with self.assertRaisesRegex(PermissionError, "reopen unlink failure"):
+                registry.ingest(
+                    self.report(failure),
+                    {failure.scenario_id: self.context()},
+                    observed_at="2026-07-17T00:00:00Z",
+                )
+
+        self.assertEqual(source.read_text(encoding="utf-8"), old_issue)
+        self.assertFalse(destination.exists())
+        self.assertEqual(index_path.read_text(encoding="utf-8"), old_index)
+        recovered = IssueRegistry(self.root)
+        issue = recovered.load(issue_id)
+        self.assertEqual(issue["status"], "resolved")
+        self.assertEqual(issue["occurrences"], 1)
+
+    def test_constructor_recovers_journal_with_source_and_destination_duplicates(self) -> None:
+        registry = IssueRegistry(self.root)
+        issue_id = self.ingest_one(registry)
+        source = self.issue_path(self.root, issue_id, "open")
+        destination = self.issue_path(self.root, issue_id, "verifying")
+        index_path = self.root / "issues" / "index.json"
+        issue = registry.load(issue_id)
+        moved = dict(issue)
+        moved["status"] = "verifying"
+
+        with registry._locked():
+            registry._begin_transaction((source, destination, index_path))
+            issue_registry._atomic_write_json(destination, moved)
+
+        self.assertTrue(source.is_file())
+        self.assertTrue(destination.is_file())
+        old_index = json.loads(index_path.read_text(encoding="utf-8"))
+        self.assertEqual(old_index["issues"][issue_id]["status"], "open")
+
+        recovered = IssueRegistry(self.root)
+
+        self.assertEqual(recovered.load(issue_id)["status"], "open")
+        self.assertTrue(source.is_file())
+        self.assertFalse(destination.exists())
 
     def test_load_uses_strict_json_and_returns_a_defensive_object(self) -> None:
         registry = IssueRegistry(self.root)

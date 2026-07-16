@@ -9,7 +9,7 @@ import re
 import stat
 import tempfile
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +23,9 @@ ISSUE_ID_PATTERN = re.compile(r"issue-[0-9a-f]{24}\Z")
 HISTORY_LIMIT = 256
 
 _SCHEMA_VERSION = 1
+_SCENARIO_HASH_PATTERN = re.compile(
+    r"(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z"
+)
 _LOCK_RETRIES = 100
 _LOCK_RETRY_DELAY_SECONDS = 0.01
 _PUBLIC_FIELDS = frozenset(
@@ -197,6 +200,14 @@ def _merged_history(
     return result[-limit:] if limit is not None else result
 
 
+def _validated_scenario_hash(value: Any) -> str:
+    if type(value) is not str or _SCENARIO_HASH_PATTERN.fullmatch(value) is None:
+        raise ValueError(
+            "scenario_hash must be a 32, 40, or 64 character hexadecimal digest"
+        )
+    return value.lower()
+
+
 def issue_fingerprint(
     failure: FailureRecord,
     violation: Violation,
@@ -209,9 +220,7 @@ def issue_fingerprint(
     if not isinstance(context, Mapping):
         raise ValueError("context must be a mapping")
     if context.get("holdout") is True:
-        scenario_hash = context.get("scenario_hash")
-        if type(scenario_hash) is not str or not scenario_hash:
-            raise ValueError("holdout scenario context must contain a hash")
+        scenario_hash = _validated_scenario_hash(context.get("scenario_hash"))
         payload = {
             "violation_code": violation.code,
             "scenario_hash": scenario_hash,
@@ -272,6 +281,7 @@ class IssueRegistry:
         }
         self.index_path = self.issues_root / "index.json"
         self._lock_path = self.issues_root / ".registry.lock"
+        self._journal_path = self.issues_root / ".transaction.json"
         self._create_layout()
         with self._locked():
             self._rebuild_index()
@@ -316,7 +326,7 @@ class IssueRegistry:
             if resolved.parent != resolved_issues:
                 raise ValueError("issue status directory escapes issues root")
 
-        for path in (self.index_path, self._lock_path):
+        for path in (self.index_path, self._lock_path, self._journal_path):
             if _is_link_or_reparse_point(path):
                 raise ValueError("issue registry files must not be links or reparse points")
             if path.resolve().parent != resolved_issues:
@@ -344,6 +354,7 @@ class IssueRegistry:
                     break
             if not acquired:
                 raise TimeoutError("timed out waiting for issue registry lock")
+            self._recover_transaction()
             yield
         finally:
             if acquired:
@@ -471,8 +482,7 @@ class IssueRegistry:
             raise ValueError("issue occurrences must be a positive integer")
 
         if holdout:
-            if type(value["scenario_hash"]) is not str or not value["scenario_hash"]:
-                raise ValueError("holdout issue must contain a scenario hash")
+            _validated_scenario_hash(value["scenario_hash"])
             return value
 
         scenario_ids = _sorted_history(value["scenario_ids"])
@@ -583,6 +593,184 @@ class IssueRegistry:
         }
         _atomic_write_json(self.index_path, index)
 
+    def _validate_index_payload(self, value: Any) -> dict[str, Any]:
+        if (
+            type(value) is not dict
+            or frozenset(value) != {"schema_version", "issues"}
+        ):
+            raise ValueError("index fields do not match the registry schema")
+        if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+            raise ValueError("unsupported index schema version")
+        issues = value["issues"]
+        if type(issues) is not dict:
+            raise ValueError("index issues must be a JSON object")
+        for issue_id, entry in issues.items():
+            _validate_issue_id(issue_id)
+            if type(entry) is not dict or frozenset(entry) != {"status", "path"}:
+                raise ValueError("index entry fields do not match the registry schema")
+            status = entry["status"]
+            if status not in ISSUE_STATUSES:
+                raise ValueError("index entry contains an invalid status")
+            expected_path = f"{status}/{issue_id}.json"
+            if entry["path"] != expected_path:
+                raise ValueError("index entry path does not match its issue status")
+        return value
+
+    def _validate_index_matches_files(self) -> None:
+        self._assert_issue_file(self.index_path)
+        index = self._validate_index_payload(_strict_json_object_from_path(self.index_path))
+        if index["issues"] != self._index_entries():
+            raise ValueError("issue index does not match persisted issue files")
+
+    def _transaction_relative_path(self, path: Path) -> str:
+        candidate = Path(path).absolute()
+        if candidate == self.index_path:
+            return "index.json"
+        for status, directory in self.status_directories.items():
+            if candidate.parent == directory and ISSUE_ID_PATTERN.fullmatch(candidate.stem):
+                if candidate.suffix != ".json":
+                    break
+                return f"{status}/{candidate.name}"
+        raise ValueError("transaction path escapes the issue registry")
+
+    def _transaction_path(self, relative_path: Any) -> Path:
+        if relative_path == "index.json":
+            return self.index_path
+        if type(relative_path) is not str:
+            raise ValueError("transaction path must be a string")
+        match = re.fullmatch(
+            r"(open|verifying|resolved)/(issue-[0-9a-f]{24})\.json",
+            relative_path,
+        )
+        if match is None:
+            raise ValueError("invalid transaction path")
+        return self._issue_path(match.group(2), match.group(1))
+
+    def _validate_transaction_snapshot(
+        self,
+        relative_path: str,
+        value: Any,
+    ) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if type(value) is not dict:
+            raise ValueError("transaction snapshot must be a JSON object or null")
+        if relative_path == "index.json":
+            return self._validate_index_payload(value)
+        status, filename = relative_path.split("/", 1)
+        return self._validate_issue(
+            value,
+            expected_issue_id=filename.removesuffix(".json"),
+            expected_status=status,
+        )
+
+    def _load_transaction_journal(
+        self,
+    ) -> list[tuple[str, Path, dict[str, Any] | None]]:
+        if _is_link_or_reparse_point(self._journal_path):
+            raise ValueError("transaction journal must not be a link or reparse point")
+        journal = _strict_json_object_from_path(self._journal_path)
+        if (
+            type(journal) is not dict
+            or frozenset(journal) != {"schema_version", "files"}
+        ):
+            raise ValueError("transaction journal fields do not match the registry schema")
+        if type(journal["schema_version"]) is not int or journal["schema_version"] != 1:
+            raise ValueError("unsupported transaction journal schema version")
+        files = journal["files"]
+        if type(files) is not list or not files:
+            raise ValueError("transaction journal files must be a non-empty array")
+        result: list[tuple[str, Path, dict[str, Any] | None]] = []
+        seen: set[str] = set()
+        for entry in files:
+            if type(entry) is not dict or frozenset(entry) != {"path", "before"}:
+                raise ValueError("transaction journal entry fields are invalid")
+            relative_path = entry["path"]
+            path = self._transaction_path(relative_path)
+            if relative_path in seen:
+                raise ValueError("transaction journal contains duplicate paths")
+            seen.add(relative_path)
+            before = self._validate_transaction_snapshot(relative_path, entry["before"])
+            result.append((relative_path, path, before))
+        if "index.json" not in seen:
+            raise ValueError("transaction journal must include index.json")
+        return result
+
+    def _read_transaction_snapshot(
+        self,
+        relative_path: str,
+        path: Path,
+    ) -> dict[str, Any] | None:
+        if not path.exists() and not path.is_symlink():
+            return None
+        if _is_link_or_reparse_point(path):
+            raise ValueError("transaction file must not be a link or reparse point")
+        value = _strict_json_object_from_path(path)
+        return self._validate_transaction_snapshot(relative_path, value)
+
+    def _begin_transaction(self, paths: Iterable[Path]) -> None:
+        if self._journal_path.exists() or self._journal_path.is_symlink():
+            raise ValueError("an issue registry transaction is already active")
+        relative_paths = sorted({self._transaction_relative_path(path) for path in paths})
+        if "index.json" not in relative_paths:
+            raise ValueError("transaction must include index.json")
+        files = []
+        for relative_path in relative_paths:
+            path = self._transaction_path(relative_path)
+            before = self._read_transaction_snapshot(relative_path, path)
+            if relative_path == "index.json" and before is None:
+                raise ValueError("transaction requires an existing index")
+            files.append({"path": relative_path, "before": before})
+        _atomic_write_json(
+            self._journal_path,
+            {"schema_version": 1, "files": files},
+        )
+
+    def _restore_transaction_file(
+        self,
+        relative_path: str,
+        path: Path,
+        before: dict[str, Any] | None,
+    ) -> None:
+        exists = path.exists() or path.is_symlink()
+        if exists and _is_link_or_reparse_point(path):
+            raise ValueError("transaction file must not be a link or reparse point")
+        if before is None:
+            if exists:
+                path.unlink()
+            return
+        if exists:
+            current = self._read_transaction_snapshot(relative_path, path)
+            if current == before:
+                return
+        _atomic_write_json(path, before)
+
+    def _recover_transaction(self) -> None:
+        if not self._journal_path.exists() and not self._journal_path.is_symlink():
+            return
+        entries = self._load_transaction_journal()
+        for relative_path, path, before in sorted(
+            entries,
+            key=lambda entry: entry[0] == "index.json",
+        ):
+            self._restore_transaction_file(relative_path, path, before)
+        self._validate_index_matches_files()
+        self._journal_path.unlink()
+
+    @contextmanager
+    def _transaction(self, paths: Iterable[Path]) -> Iterator[None]:
+        self._begin_transaction(paths)
+        try:
+            yield
+            self._validate_index_matches_files()
+            self._journal_path.unlink()
+        except BaseException as error:
+            try:
+                self._recover_transaction()
+            except BaseException as recovery_error:
+                raise recovery_error from error
+            raise
+
     def _public_context(
         self,
         context: Mapping[str, Any],
@@ -608,10 +796,7 @@ class IssueRegistry:
     def _holdout_hash(context: Mapping[str, Any]) -> str:
         if context.get("holdout") is not True:
             raise ValueError("holdout scenario context must set holdout to true")
-        scenario_hash = context.get("scenario_hash")
-        if type(scenario_hash) is not str or not scenario_hash:
-            raise ValueError("holdout scenario context must contain a hash")
-        return scenario_hash
+        return _validated_scenario_hash(context.get("scenario_hash"))
 
     def _new_issue(
         self,
@@ -775,28 +960,22 @@ class IssueRegistry:
                 return ()
 
             destinations: dict[str, Path] = {}
-            newly_created: list[Path] = []
             for issue_id, issue in sorted(working.items()):
                 destination = self._issue_path(issue_id, "open")
                 destinations[issue_id] = destination
-                source = sources[issue_id]
-                if source is None or source[1] != destination:
-                    newly_created.append(destination)
-                _atomic_write_json(destination, issue)
-
-            try:
-                self._rebuild_index({issue_id: "open" for issue_id in working})
-            except Exception:
-                for path in newly_created:
-                    try:
-                        path.unlink()
-                    except FileNotFoundError:
-                        pass
-                raise
-
-            for issue_id, source in sources.items():
-                if source is not None and source[1] != destinations[issue_id]:
-                    source[1].unlink()
+            transaction_paths = [self.index_path, *destinations.values()]
+            transaction_paths.extend(
+                source[1]
+                for source in sources.values()
+                if source is not None
+            )
+            with self._transaction(transaction_paths):
+                for issue_id, issue in sorted(working.items()):
+                    _atomic_write_json(destinations[issue_id], issue)
+                for issue_id, source in sources.items():
+                    if source is not None and source[1] != destinations[issue_id]:
+                        source[1].unlink()
+                self._rebuild_index()
 
         return tuple(sorted(touched))
 
@@ -859,14 +1038,8 @@ class IssueRegistry:
                 expected_status=status,
             )
             destination = self._issue_path(issue_id, status)
-            _atomic_write_json(destination, updated)
-            try:
-                self._rebuild_index({issue_id: status})
-            except Exception:
-                try:
-                    destination.unlink()
-                except FileNotFoundError:
-                    pass
-                raise
-            source.unlink()
+            with self._transaction((self.index_path, source, destination)):
+                _atomic_write_json(destination, updated)
+                source.unlink()
+                self._rebuild_index()
             return _defensive_copy(updated)
