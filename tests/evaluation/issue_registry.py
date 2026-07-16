@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import math
 import os
 import re
+import secrets
 import stat
 import tempfile
 import time
@@ -77,6 +79,17 @@ def _is_link_or_reparse_point(path: Path) -> bool:
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
     file_attributes = getattr(metadata, "st_file_attributes", 0)
     return bool(reparse_flag and file_attributes & reparse_flag)
+
+
+def _assert_no_link_ancestors(path: Path) -> None:
+    current = path
+    while True:
+        if _is_link_or_reparse_point(current):
+            raise ValueError("issue registry path must not contain links or reparse points")
+        parent = current.parent
+        if parent == current:
+            return
+        current = parent
 
 
 def _json_value(value: Any, path: str = "$") -> Any:
@@ -197,14 +210,23 @@ def issue_fingerprint(
         raise ValueError("violation must be a blocking Violation")
     if not isinstance(context, Mapping):
         raise ValueError("context must be a mapping")
-    payload = {
-        "violation_code": violation.code,
-        "minimized_messages": list(failure.minimized_messages),
-        "health_bucket": context.get("health_bucket"),
-        "intent": context.get("intent"),
-        "expectation": context.get("expectation", {}),
-        "scenario_hash": context.get("scenario_hash"),
-    }
+    if context.get("holdout") is True:
+        scenario_hash = context.get("scenario_hash")
+        if type(scenario_hash) is not str or not scenario_hash:
+            raise ValueError("holdout scenario context must contain a hash")
+        payload = {
+            "violation_code": violation.code,
+            "scenario_hash": scenario_hash,
+        }
+    else:
+        payload = {
+            "violation_code": violation.code,
+            "minimized_messages": list(failure.minimized_messages),
+            "health_bucket": context.get("health_bucket"),
+            "intent": context.get("intent"),
+            "expectation": context.get("expectation", {}),
+            "scenario_hash": context.get("scenario_hash"),
+        }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:24]
 
 
@@ -239,7 +261,13 @@ def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
 
 class IssueRegistry:
     def __init__(self, evaluation_root: str | os.PathLike[str]) -> None:
-        self.evaluation_root = Path(evaluation_root).absolute()
+        lexical_root = Path(evaluation_root)
+        if ".." in lexical_root.parts:
+            raise ValueError("evaluation_root must not contain parent traversal parts")
+        if not lexical_root.is_absolute():
+            lexical_root = Path.cwd() / lexical_root
+        self.evaluation_root = Path(os.path.abspath(lexical_root))
+        _assert_no_link_ancestors(self.evaluation_root)
         self.issues_root = self.evaluation_root / "issues"
         self.status_directories = {
             status: self.issues_root / status for status in sorted(ISSUE_STATUSES)
@@ -265,6 +293,7 @@ class IssueRegistry:
         self._assert_layout()
 
     def _assert_layout(self) -> None:
+        _assert_no_link_ancestors(self.evaluation_root)
         paths = [
             self.evaluation_root,
             self.issues_root,
@@ -299,6 +328,7 @@ class IssueRegistry:
     def _locked(self) -> Iterator[None]:
         self._assert_layout()
         descriptor: int | None = None
+        token = secrets.token_hex(16)
         for attempt in range(_LOCK_RETRIES):
             try:
                 descriptor = os.open(
@@ -314,11 +344,10 @@ class IssueRegistry:
                 except FileNotFoundError:
                     continue
                 if stale:
-                    try:
-                        self._lock_path.unlink()
-                    except FileNotFoundError:
-                        pass
-                    continue
+                    owner = self._read_lock_owner()
+                    if owner is not None and not self._process_exists(owner[0]):
+                        if self._unlink_lock_if_token(owner[1]):
+                            continue
                 if attempt + 1 == _LOCK_RETRIES:
                     raise TimeoutError("timed out waiting for issue registry lock")
                 time.sleep(_LOCK_RETRY_DELAY_SECONDS)
@@ -327,17 +356,89 @@ class IssueRegistry:
         if descriptor is None:
             raise TimeoutError("timed out waiting for issue registry lock")
         try:
-            os.write(descriptor, f"{os.getpid()}\n".encode("ascii"))
+            payload = (
+                json.dumps(
+                    {"pid": os.getpid(), "token": token},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode("ascii")
+            written = 0
+            while written < len(payload):
+                written += os.write(descriptor, payload[written:])
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
         try:
             yield
         finally:
-            try:
-                self._lock_path.unlink()
-            except FileNotFoundError:
-                pass
+            self._unlink_lock_if_token(token)
+
+    def _read_lock_owner(self) -> tuple[int, str] | None:
+        if _is_link_or_reparse_point(self._lock_path):
+            return None
+        try:
+            value = _strict_json_object_from_path(self._lock_path)
+        except (OSError, UnicodeError, ValueError):
+            return None
+        if frozenset(value) != {"pid", "token"}:
+            return None
+        pid = value["pid"]
+        token = value["token"]
+        if type(pid) is not int or pid <= 0:
+            return None
+        if type(token) is not str or not token:
+            return None
+        return pid, token
+
+    @staticmethod
+    def _process_exists(pid: int) -> bool:
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+
+            process_query_limited_information = 0x1000
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            open_process = kernel32.OpenProcess
+            open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            open_process.restype = wintypes.HANDLE
+            close_handle = kernel32.CloseHandle
+            close_handle.argtypes = [wintypes.HANDLE]
+            close_handle.restype = wintypes.BOOL
+            handle = open_process(
+                process_query_limited_information,
+                False,
+                pid,
+            )
+            if handle:
+                close_handle(handle)
+                return True
+            error = ctypes.get_last_error()
+            if error == 87:
+                return False
+            return True
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError as error:
+            if error.errno == errno.ESRCH:
+                return False
+            return True
+        return True
+
+    def _unlink_lock_if_token(self, token: str) -> bool:
+        owner = self._read_lock_owner()
+        if owner is None or owner[1] != token:
+            return False
+        try:
+            self._lock_path.unlink()
+        except FileNotFoundError:
+            return False
+        return True
 
     def _issue_path(self, issue_id: str, status: str) -> Path:
         _validate_issue_id(issue_id)
@@ -371,7 +472,10 @@ class IssueRegistry:
         allowed = _HOLDOUT_FIELDS if holdout else _PUBLIC_FIELDS
         if frozenset(value) != allowed:
             raise ValueError("issue fields do not match the registry schema")
-        if value["schema_version"] != _SCHEMA_VERSION:
+        if (
+            type(value["schema_version"]) is not int
+            or value["schema_version"] != _SCHEMA_VERSION
+        ):
             raise ValueError("unsupported issue schema version")
         issue_id = _validate_issue_id(value["issue_id"])
         if expected_issue_id is not None and issue_id != expected_issue_id:

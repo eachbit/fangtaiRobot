@@ -109,6 +109,10 @@ class IssueRegistryTests(unittest.TestCase):
             return result.returncode == 0
 
     @staticmethod
+    def lock_payload(pid: int, token: str) -> str:
+        return json.dumps({"pid": pid, "token": token}, sort_keys=True) + "\n"
+
+    @staticmethod
     def completed_cycle(issue_ids: list[str] | None = None) -> dict[str, object]:
         return {
             "status": "completed",
@@ -327,6 +331,38 @@ class IssueRegistryTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, issue)
 
+    def test_holdout_fingerprint_uses_only_scenario_hash_and_violation_code(self) -> None:
+        first = self.failure(
+            "private-a",
+            original_messages=("first private original",),
+            minimized_messages=("first private minimum",),
+            evidence={"private": "first"},
+        )
+        second = self.failure(
+            "private-b",
+            original_messages=("second private original",),
+            minimized_messages=("second private minimum",),
+            message="different private wording",
+            evidence={"private": "second"},
+        )
+        first_context = {
+            "holdout": True,
+            "scenario_hash": "same-holdout-hash",
+            "expectation": {"private": "first"},
+            "intent": "private-first",
+        }
+        second_context = {
+            "holdout": True,
+            "scenario_hash": "same-holdout-hash",
+            "expectation": {"private": "second"},
+            "intent": "private-second",
+        }
+
+        self.assertEqual(
+            issue_fingerprint(first, first.violations[0], first_context),
+            issue_fingerprint(second, second.violations[0], second_context),
+        )
+
     def test_invalid_issue_identifiers_are_rejected(self) -> None:
         registry = IssueRegistry(self.root)
         for issue_id in (
@@ -369,6 +405,26 @@ class IssueRegistryTests(unittest.TestCase):
         if not link_supported:
             self.skipTest("directory symlinks and junctions are unavailable")
 
+    def test_evaluation_root_rejects_existing_link_ancestor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            target = base / "target"
+            target.mkdir()
+            linked_ancestor = base / "linked-parent"
+            if not self.make_directory_link(linked_ancestor, target):
+                self.skipTest("directory symlinks and junctions are unavailable")
+
+            with self.assertRaisesRegex(ValueError, "links or reparse points"):
+                IssueRegistry(linked_ancestor / "nested" / "evaluation")
+
+            self.assertEqual(list(target.iterdir()), [])
+
+    def test_evaluation_root_rejects_parent_traversal_parts(self) -> None:
+        path = self.root.parent / "intermediate" / ".." / "evaluation"
+
+        with self.assertRaisesRegex(ValueError, "parent traversal"):
+            IssueRegistry(path)
+
     def test_index_replace_failure_leaves_old_index_parseable(self) -> None:
         registry = IssueRegistry(self.root)
         index_path = self.root / "issues" / "index.json"
@@ -404,9 +460,23 @@ class IssueRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate JSON key"):
             registry.load(issue_id)
 
+    def test_schema_version_rejects_boolean_true(self) -> None:
+        registry = IssueRegistry(self.root)
+        issue_id = self.ingest_one(registry)
+        path = self.issue_path(self.root, issue_id)
+        issue = json.loads(path.read_text(encoding="utf-8"))
+        issue["schema_version"] = True
+        path.write_text(json.dumps(issue), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "schema version"):
+            registry.load(issue_id)
+
     def test_stale_lock_is_removed_before_ingest(self) -> None:
         registry = IssueRegistry(self.root)
-        registry._lock_path.write_text("stale", encoding="utf-8")
+        registry._lock_path.write_text(
+            self.lock_payload(2_147_483_647, "dead-owner-token"),
+            encoding="utf-8",
+        )
         stale_time = time.time() - 3600
         os.utime(registry._lock_path, (stale_time, stale_time))
 
@@ -414,6 +484,32 @@ class IssueRegistryTests(unittest.TestCase):
 
         self.assertTrue(self.issue_path(self.root, issue_id).is_file())
         self.assertFalse(registry._lock_path.exists())
+
+    def test_active_stale_lock_is_not_removed(self) -> None:
+        registry = IssueRegistry(self.root)
+        lock_content = self.lock_payload(os.getpid(), "active-owner-token")
+        registry._lock_path.write_text(lock_content, encoding="utf-8")
+        stale_time = time.time() - 3600
+        os.utime(registry._lock_path, (stale_time, stale_time))
+
+        with mock.patch.object(issue_registry.time, "sleep", return_value=None):
+            with self.assertRaises(TimeoutError):
+                self.ingest_one(registry)
+
+        self.assertEqual(registry._lock_path.read_text(encoding="utf-8"), lock_content)
+
+    def test_lock_release_does_not_remove_changed_owner_token(self) -> None:
+        registry = IssueRegistry(self.root)
+
+        with registry._locked():
+            owner = json.loads(registry._lock_path.read_text(encoding="utf-8"))
+            self.assertEqual(owner["pid"], os.getpid())
+            self.assertRegex(owner["token"], r"\A[0-9a-f]{32}\Z")
+            changed = self.lock_payload(os.getpid(), "replacement-owner-token")
+            registry._lock_path.write_text(changed, encoding="utf-8")
+
+        self.assertEqual(registry._lock_path.read_text(encoding="utf-8"), changed)
+        registry._lock_path.unlink()
 
     def test_status_transitions_accept_only_the_defined_flow(self) -> None:
         registry = IssueRegistry(self.root)
