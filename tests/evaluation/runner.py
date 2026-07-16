@@ -406,6 +406,7 @@ class EvaluationRunner:
             self.official_recipes = {item.id: item for item in official_recipes}
         self.intermediates: dict[str, list[dict[str, Any]]] = {}
         self.source_metadata: dict[str, dict[str, Any]] = {}
+        self.scenario_context: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def _read_commit_sha() -> str:
@@ -541,6 +542,21 @@ class EvaluationRunner:
             )
         self.source_metadata = {item.scenario_id: sources[item.scenario_id] for item in selected}
         return tuple(selected)
+
+    def _scenario_context_payload(self, scenario: Scenario) -> dict[str, Any]:
+        source = self.source_metadata[scenario.scenario_id]
+        if source.get("holdout") is True:
+            return {
+                "holdout": True,
+                "scenario_hash": str(source["scenario_hash"]),
+            }
+        return {
+            "holdout": False,
+            "health_bucket": scenario.persona.primary_bucket,
+            "intent": scenario.intent,
+            "expectation": scenario.expectation.to_dict(),
+            "scenario": scenario.to_dict(),
+        }
 
     def _elapsed(self, started: float) -> float:
         return round(max(0.0, (self.clock() - started) * 1000.0), 2)
@@ -755,6 +771,10 @@ class EvaluationRunner:
         if count < 10:
             raise ValueError("count must be at least 10")
         scenarios = self._load_scenarios(count)
+        self.scenario_context = {
+            scenario.scenario_id: self._scenario_context_payload(scenario)
+            for scenario in scenarios
+        }
         self.intermediates = {}
         results: list[ScenarioResult] = []
         reviewed_rows: list[tuple[Scenario, Mapping[str, Any]]] = []

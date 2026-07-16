@@ -526,6 +526,78 @@ class EvaluationRunnerTests(unittest.TestCase):
     def test_mode_counts_are_exact(self) -> None:
         self.assertEqual(MODE_COUNTS, {"quick": 120, "daily": 2000, "deep": 10000})
 
+    def test_scenario_context_starts_empty_and_rebuilds_for_each_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runner = self.build_runner(Path(directory))
+            self.assertEqual(runner.scenario_context, {})
+
+            runner.run_count(10)
+            expected_scenario = self.scenarios(17, 10)[0]
+            self.assertEqual(
+                runner.scenario_context[expected_scenario.scenario_id],
+                {
+                    "holdout": False,
+                    "health_bucket": expected_scenario.persona.primary_bucket,
+                    "intent": expected_scenario.intent,
+                    "expectation": expected_scenario.expectation.to_dict(),
+                    "scenario": expected_scenario.to_dict(),
+                },
+            )
+            self.assertEqual(
+                json.loads(json.dumps(runner.scenario_context)),
+                runner.scenario_context,
+            )
+
+            runner.scenario_context["stale-case"] = {"holdout": False}
+            runner.run_count(10)
+
+            self.assertNotIn("stale-case", runner.scenario_context)
+            self.assertEqual(len(runner.scenario_context), 10)
+
+    def test_holdout_scenario_context_contains_only_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            holdout = root / "holdout"
+            holdout.mkdir()
+            private = self.scenarios(17, 10)[1].to_dict()
+            private["scenario_id"] = "private-case"
+            private["messages"] = ["private-message-never-expose"]
+            private["persona"]["persona_id"] = "private-persona-never-expose"
+            private["expectation"]["forbidden_terms"] = [
+                "private-expectation-never-expose"
+            ]
+            (holdout / "private.json").write_text(
+                json.dumps(private, ensure_ascii=False), encoding="utf-8"
+            )
+            runner = self.build_runner(
+                root / "out",
+                mode="deep",
+                corpus_root=root,
+                include_holdout=True,
+                holdout_dir=holdout,
+            )
+
+            runner.run_count(10)
+
+            self.assertEqual(
+                runner.scenario_context["private-case"],
+                {
+                    "holdout": True,
+                    "scenario_hash": runner.source_metadata["private-case"][
+                        "scenario_hash"
+                    ],
+                },
+            )
+            private_context = json.dumps(
+                runner.scenario_context["private-case"], ensure_ascii=False
+            )
+            for secret in (
+                "private-message-never-expose",
+                "private-persona-never-expose",
+                "private-expectation-never-expose",
+            ):
+                self.assertNotIn(secret, private_context)
+
     def test_modes_preserve_every_nonempty_source_and_generated_cases(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
