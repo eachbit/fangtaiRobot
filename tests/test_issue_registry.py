@@ -352,14 +352,17 @@ class IssueRegistryTests(unittest.TestCase):
         registry = IssueRegistry(self.root)
         issue_id = self.ingest_one(registry)
         source = self.issue_path(self.root, issue_id, "open")
-        calls: list[tuple[Path, tuple[int, int, Path] | None]] = []
+        calls: list[
+            tuple[Path, tuple[int, int, Path] | None, tuple[int, int] | None]
+        ] = []
 
         def durable_unlink(
             path: Path,
             *,
             expected_parent_identity: tuple[int, int, Path] | None = None,
+            expected_file_identity: tuple[int, int] | None = None,
         ) -> None:
-            calls.append((Path(path), expected_parent_identity))
+            calls.append((Path(path), expected_parent_identity, expected_file_identity))
             Path(path).unlink()
 
         with mock.patch.object(
@@ -370,12 +373,65 @@ class IssueRegistryTests(unittest.TestCase):
         ):
             registry.set_status(issue_id, "verifying")
 
-        paths = [path for path, _ in calls]
+        paths = [path for path, _, _ in calls]
         self.assertIn(source, paths)
         self.assertIn(registry._journal_path, paths)
         self.assertLess(paths.index(source), paths.index(registry._journal_path))
         self.assertIsNotNone(calls[paths.index(source)][1])
+        self.assertIsNotNone(calls[paths.index(source)][2])
         self.assertIsNotNone(calls[paths.index(registry._journal_path)][1])
+
+    @unittest.skipUnless(os.name == "nt", "Windows handle deletion only")
+    def test_windows_delete_failure_never_falls_back_to_path_unlink(self) -> None:
+        self.root.mkdir(parents=True)
+        path = self.root / "windows-delete.json"
+        path.write_text("delete me", encoding="utf-8")
+        parent_identity = issue_registry._directory_identity(path.parent)
+
+        with (
+            mock.patch.object(
+                issue_registry,
+                "_windows_delete_by_handle",
+                side_effect=OSError(errno.EIO, "WinAPI delete failure"),
+                create=True,
+            ) as delete_by_handle,
+            self.assertRaisesRegex(OSError, "WinAPI delete failure"),
+        ):
+            issue_registry._durable_unlink(
+                path,
+                expected_parent_identity=parent_identity,
+            )
+
+        delete_by_handle.assert_called_once()
+        self.assertTrue(path.is_file())
+
+    @unittest.skipUnless(os.name == "nt", "Windows handle deletion only")
+    def test_windows_delete_handle_closes_when_identity_read_fails(self) -> None:
+        delete_by_handle = getattr(issue_registry, "_windows_delete_by_handle", None)
+        self.assertIsNotNone(delete_by_handle)
+        with (
+            mock.patch.object(
+                issue_registry,
+                "_windows_open_delete_handle",
+                return_value=91,
+                create=True,
+            ),
+            mock.patch.object(
+                issue_registry,
+                "_windows_handle_identity",
+                side_effect=OSError(errno.EIO, "identity failure"),
+                create=True,
+            ),
+            mock.patch.object(
+                issue_registry,
+                "_windows_close_handle",
+                create=True,
+            ) as close_handle,
+            self.assertRaisesRegex(OSError, "identity failure"),
+        ):
+            delete_by_handle(self.root / "source.json", (1, 2))
+
+        close_handle.assert_called_once_with(91)
 
     def test_directory_fsync_ignores_only_supported_windows_errors(self) -> None:
         with (
@@ -1397,13 +1453,37 @@ class IssueRegistryTests(unittest.TestCase):
         old_index = index_path.read_text(encoding="utf-8")
         path_type = type(source)
         real_unlink = path_type.unlink
+        real_mark_for_deletion = getattr(
+            issue_registry,
+            "_windows_mark_handle_for_deletion",
+            None,
+        )
+        failed = False
 
         def fail_source_unlink(path: Path, *args: object, **kwargs: object) -> None:
             if path == source:
                 raise PermissionError("simulated source unlink failure")
             real_unlink(path, *args, **kwargs)
 
-        with mock.patch.object(path_type, "unlink", new=fail_source_unlink):
+        def fail_first_disposition(handle: int) -> None:
+            nonlocal failed
+            if not failed:
+                failed = True
+                raise PermissionError("simulated source unlink failure")
+            if real_mark_for_deletion is None:
+                self.fail("Windows handle deletion helper is unavailable")
+            real_mark_for_deletion(handle)
+
+        unlink_failure = (
+            mock.patch.object(
+                issue_registry,
+                "_windows_mark_handle_for_deletion",
+                side_effect=fail_first_disposition,
+            )
+            if os.name == "nt"
+            else mock.patch.object(path_type, "unlink", new=fail_source_unlink)
+        )
+        with unlink_failure:
             with self.assertRaisesRegex(PermissionError, "source unlink failure"):
                 registry.set_status(issue_id, "verifying")
 
@@ -1413,6 +1493,7 @@ class IssueRegistryTests(unittest.TestCase):
         recovered = IssueRegistry(self.root)
         self.assertEqual(recovered.load(issue_id)["status"], "open")
 
+    @unittest.skipUnless(os.name == "nt", "Windows handle deletion race")
     def test_set_status_rejects_source_parent_swap_before_unlink(self) -> None:
         registry = IssueRegistry(self.root)
         issue_id = self.ingest_one(registry)
@@ -1427,25 +1508,47 @@ class IssueRegistryTests(unittest.TestCase):
         outside_source.write_bytes(outside_bytes)
         old_issue = source.read_bytes()
         old_index = registry.index_path.read_bytes()
-        real_atomic_write = issue_registry._atomic_write_json
+        path_type = type(source)
+        real_unlink = path_type.unlink
+        real_mark_for_deletion = getattr(
+            issue_registry,
+            "_windows_mark_handle_for_deletion",
+            None,
+        )
         swapped = False
 
-        def write_then_swap(path: Path, value: object) -> None:
+        def swap_source_parent() -> None:
             nonlocal swapped
-            real_atomic_write(path, value)
-            if path == destination and not swapped:
-                source_directory.rename(original_directory)
-                if not self.make_directory_link(source_directory, outside):
-                    original_directory.rename(source_directory)
-                    self.skipTest("directory links are unavailable")
-                swapped = True
+            source_directory.rename(original_directory)
+            if not self.make_directory_link(source_directory, outside):
+                original_directory.rename(source_directory)
+                self.skipTest("directory links are unavailable")
+            swapped = True
+
+        def unlink_after_check(path: Path, *args: object, **kwargs: object) -> None:
+            if path == source and not swapped:
+                swap_source_parent()
+            real_unlink(path, *args, **kwargs)
+
+        def mark_after_check(handle: int) -> None:
+            if not swapped:
+                swap_source_parent()
+            if real_mark_for_deletion is None:
+                self.fail("Windows handle deletion helper is unavailable")
+            real_mark_for_deletion(handle)
 
         try:
             with (
                 mock.patch.object(
+                    path_type,
+                    "unlink",
+                    new=unlink_after_check,
+                ),
+                mock.patch.object(
                     issue_registry,
-                    "_atomic_write_json",
-                    side_effect=write_then_swap,
+                    "_windows_mark_handle_for_deletion",
+                    side_effect=mark_after_check,
+                    create=True,
                 ),
                 self.assertRaisesRegex(ValueError, "changed|link|reparse"),
             ):
@@ -1482,13 +1585,37 @@ class IssueRegistryTests(unittest.TestCase):
         old_index = index_path.read_text(encoding="utf-8")
         path_type = type(source)
         real_unlink = path_type.unlink
+        real_mark_for_deletion = getattr(
+            issue_registry,
+            "_windows_mark_handle_for_deletion",
+            None,
+        )
+        failed = False
 
         def fail_source_unlink(path: Path, *args: object, **kwargs: object) -> None:
             if path == source:
                 raise PermissionError("simulated reopen unlink failure")
             real_unlink(path, *args, **kwargs)
 
-        with mock.patch.object(path_type, "unlink", new=fail_source_unlink):
+        def fail_first_disposition(handle: int) -> None:
+            nonlocal failed
+            if not failed:
+                failed = True
+                raise PermissionError("simulated reopen unlink failure")
+            if real_mark_for_deletion is None:
+                self.fail("Windows handle deletion helper is unavailable")
+            real_mark_for_deletion(handle)
+
+        unlink_failure = (
+            mock.patch.object(
+                issue_registry,
+                "_windows_mark_handle_for_deletion",
+                side_effect=fail_first_disposition,
+            )
+            if os.name == "nt"
+            else mock.patch.object(path_type, "unlink", new=fail_source_unlink)
+        )
+        with unlink_failure:
             with self.assertRaisesRegex(PermissionError, "reopen unlink failure"):
                 registry.ingest(
                     self.report(failure),
@@ -1594,6 +1721,47 @@ class IssueRegistryTests(unittest.TestCase):
         self.assertTrue(source.is_file())
         self.assertFalse(destination.exists())
         self.assertFalse(recovered._journal_path.exists())
+
+    def test_transaction_snapshot_rejects_source_file_identity_change(self) -> None:
+        registry = IssueRegistry(self.root)
+        issue_id = self.ingest_one(registry)
+        source = self.issue_path(self.root, issue_id, "open")
+        destination = self.issue_path(self.root, issue_id, "verifying")
+        original = source.with_name(f"{source.stem}-original.json")
+        source_bytes = source.read_bytes()
+        real_read_snapshot = registry._read_transaction_snapshot
+        swapped = False
+
+        def read_then_replace(relative_path: str, path: Path):
+            nonlocal swapped
+            snapshot = real_read_snapshot(relative_path, path)
+            if path == source and not swapped:
+                source.rename(original)
+                source.write_bytes(source_bytes)
+                swapped = True
+            return snapshot
+
+        try:
+            with (
+                registry._locked(),
+                mock.patch.object(
+                    registry,
+                    "_read_transaction_snapshot",
+                    side_effect=read_then_replace,
+                ),
+                self.assertRaisesRegex(ValueError, "changed"),
+            ):
+                registry._begin_transaction(
+                    (registry.index_path, source, destination)
+                )
+        finally:
+            if swapped:
+                source.unlink()
+                original.rename(source)
+            if registry._journal_path.exists():
+                registry._journal_path.unlink()
+
+        self.assertEqual(source.read_bytes(), source_bytes)
 
     def test_journal_null_index_before_is_rejected_without_modifying_files(self) -> None:
         registry = IssueRegistry(self.root)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import errno
 import hashlib
 import json
@@ -11,6 +12,8 @@ import tempfile
 import time
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
+from ctypes import wintypes
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -32,6 +35,20 @@ _OBSERVATION_TEMP_PATTERN = re.compile(
 )
 _LOCK_RETRIES = 100
 _LOCK_RETRY_DELAY_SECONDS = 0.01
+_WINDOWS_DELETE = 0x00010000
+_WINDOWS_FILE_READ_ATTRIBUTES = 0x00000080
+_WINDOWS_FILE_SHARE_READ = 0x00000001
+_WINDOWS_FILE_SHARE_WRITE = 0x00000002
+_WINDOWS_FILE_SHARE_DELETE = 0x00000004
+_WINDOWS_OPEN_EXISTING = 3
+_WINDOWS_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
+_WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+_WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_WINDOWS_FILE_DISPOSITION_INFO_CLASS = 4
+_WINDOWS_FILE_DISPOSITION_INFO_EX_CLASS = 21
+_WINDOWS_FILE_DISPOSITION_FLAG_DELETE = 0x00000001
+_WINDOWS_FILE_DISPOSITION_FLAG_POSIX_SEMANTICS = 0x00000002
+_WINDOWS_FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE = 0x00000010
 _PUBLIC_FIELDS = frozenset(
     {
         "schema_version",
@@ -72,6 +89,35 @@ _HOLDOUT_FIELDS = frozenset(
         "occurrences",
     }
 )
+
+
+class _WindowsByHandleFileInformation(ctypes.Structure):
+    _fields_ = (
+        ("dwFileAttributes", wintypes.DWORD),
+        ("ftCreationTime", wintypes.FILETIME),
+        ("ftLastAccessTime", wintypes.FILETIME),
+        ("ftLastWriteTime", wintypes.FILETIME),
+        ("dwVolumeSerialNumber", wintypes.DWORD),
+        ("nFileSizeHigh", wintypes.DWORD),
+        ("nFileSizeLow", wintypes.DWORD),
+        ("nNumberOfLinks", wintypes.DWORD),
+        ("nFileIndexHigh", wintypes.DWORD),
+        ("nFileIndexLow", wintypes.DWORD),
+    )
+
+
+class _WindowsFileDispositionInformation(ctypes.Structure):
+    _fields_ = (("DeleteFile", wintypes.BOOLEAN),)
+
+
+class _WindowsFileDispositionInformationEx(ctypes.Structure):
+    _fields_ = (("Flags", wintypes.DWORD),)
+
+
+@dataclass
+class _TransactionIdentities:
+    parents: dict[Path, tuple[int, int, Path]]
+    files: dict[Path, tuple[int, int] | None]
 
 
 def _is_link_or_reparse_point(path: Path) -> bool:
@@ -314,12 +360,166 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _windows_open_file_handle(path: Path, desired_access: int) -> int:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        str(path),
+        desired_access,
+        _WINDOWS_FILE_SHARE_READ
+        | _WINDOWS_FILE_SHARE_WRITE
+        | _WINDOWS_FILE_SHARE_DELETE,
+        None,
+        _WINDOWS_OPEN_EXISTING,
+        _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return int(handle)
+
+
+def _windows_open_delete_handle(path: Path) -> int:
+    return _windows_open_file_handle(
+        path,
+        _WINDOWS_DELETE | _WINDOWS_FILE_READ_ATTRIBUTES,
+    )
+
+
+def _windows_close_handle(handle: int) -> None:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    if not close_handle(handle):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _windows_handle_identity(handle: int) -> tuple[tuple[int, int], int]:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_information = kernel32.GetFileInformationByHandle
+    get_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(_WindowsByHandleFileInformation),
+    )
+    get_information.restype = wintypes.BOOL
+    information = _WindowsByHandleFileInformation()
+    if not get_information(handle, ctypes.byref(information)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    file_index = (int(information.nFileIndexHigh) << 32) | int(
+        information.nFileIndexLow
+    )
+    return (
+        (int(information.dwVolumeSerialNumber), file_index),
+        int(information.dwFileAttributes),
+    )
+
+
+def _windows_mark_handle_for_deletion(handle: int) -> None:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    set_information = kernel32.SetFileInformationByHandle
+    set_information.argtypes = (
+        wintypes.HANDLE,
+        wintypes.INT,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    )
+    set_information.restype = wintypes.BOOL
+    basic = _WindowsFileDispositionInformation(True)
+    if set_information(
+        handle,
+        _WINDOWS_FILE_DISPOSITION_INFO_CLASS,
+        ctypes.byref(basic),
+        ctypes.sizeof(basic),
+    ):
+        return
+    extended = _WindowsFileDispositionInformationEx(
+        _WINDOWS_FILE_DISPOSITION_FLAG_DELETE
+        | _WINDOWS_FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+        | _WINDOWS_FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE
+    )
+    if set_information(
+        handle,
+        _WINDOWS_FILE_DISPOSITION_INFO_EX_CLASS,
+        ctypes.byref(extended),
+        ctypes.sizeof(extended),
+    ):
+        return
+    raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _validate_windows_file_information(
+    identity: tuple[int, int],
+    attributes: int,
+) -> tuple[int, int]:
+    if attributes & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
+        raise ValueError("transaction file must not be a reparse point")
+    if attributes & _WINDOWS_FILE_ATTRIBUTE_DIRECTORY:
+        raise ValueError("transaction path must be a regular file")
+    return identity
+
+
+def _windows_file_identity(path: Path) -> tuple[int, int]:
+    handle = _windows_open_file_handle(path, _WINDOWS_FILE_READ_ATTRIBUTES)
+    try:
+        identity, attributes = _windows_handle_identity(handle)
+        return _validate_windows_file_information(identity, attributes)
+    finally:
+        _windows_close_handle(handle)
+
+
+def _windows_delete_by_handle(
+    path: Path,
+    expected_file_identity: tuple[int, int],
+) -> None:
+    handle = _windows_open_delete_handle(path)
+    try:
+        identity, attributes = _windows_handle_identity(handle)
+        actual_identity = _validate_windows_file_information(identity, attributes)
+        if actual_identity != expected_file_identity:
+            raise ValueError("transaction file changed before deletion")
+        _windows_mark_handle_for_deletion(handle)
+    finally:
+        _windows_close_handle(handle)
+
+
+def _file_identity(path: Path) -> tuple[int, int]:
+    if os.name == "nt":
+        return _windows_file_identity(path)
+    metadata = path.lstat()
+    if _is_link_or_reparse_point(path) or not stat.S_ISREG(metadata.st_mode):
+        raise ValueError("transaction path must be a regular file")
+    return metadata.st_dev, metadata.st_ino
+
+
 def _durable_unlink(
     path: Path,
     *,
     expected_parent_identity: tuple[int, int, Path] | None = None,
+    expected_file_identity: tuple[int, int] | None = None,
 ) -> None:
     parent = path.parent
+    if os.name == "nt":
+        if expected_parent_identity is not None:
+            _assert_directory_identity(parent, expected_parent_identity)
+        file_identity = expected_file_identity or _file_identity(path)
+        _windows_delete_by_handle(path, file_identity)
+        if expected_parent_identity is not None:
+            _assert_directory_identity(parent, expected_parent_identity)
+            _fsync_directory(parent)
+        elif not _is_link_or_reparse_point(parent):
+            _fsync_directory(parent)
+        return
     if expected_parent_identity is None:
         path.unlink()
         _fsync_directory(parent)
@@ -337,12 +537,25 @@ def _durable_unlink(
                 or (metadata.st_dev, metadata.st_ino) != parent_identity[:2]
             ):
                 raise ValueError("unlink parent directory changed before deletion")
+            target_metadata = os.stat(
+                path.name,
+                dir_fd=descriptor,
+                follow_symlinks=False,
+            )
+            file_identity = expected_file_identity or (
+                target_metadata.st_dev,
+                target_metadata.st_ino,
+            )
+            if (
+                not stat.S_ISREG(target_metadata.st_mode)
+                or (target_metadata.st_dev, target_metadata.st_ino) != file_identity
+            ):
+                raise ValueError("transaction file changed before deletion")
             os.unlink(path.name, dir_fd=descriptor)
         finally:
             os.close(descriptor)
     else:
-        _assert_directory_identity(parent, parent_identity)
-        path.unlink()
+        raise OSError(errno.ENOTSUP, "safe relative unlink is unavailable")
     _assert_directory_identity(parent, parent_identity)
     _fsync_directory(path.parent)
 
@@ -1161,7 +1374,7 @@ class IssueRegistry:
     def _begin_transaction(
         self,
         paths: Iterable[Path],
-    ) -> dict[Path, tuple[int, int, Path]]:
+    ) -> _TransactionIdentities:
         if self._journal_path.exists() or self._journal_path.is_symlink():
             raise ValueError("an issue registry transaction is already active")
         relative_paths = sorted({self._transaction_relative_path(path) for path in paths})
@@ -1172,17 +1385,25 @@ class IssueRegistry:
         ]
         parent_identities = self._transaction_parent_identities(transaction_paths)
         files = []
+        file_identities: dict[Path, tuple[int, int] | None] = {}
         for relative_path, path in zip(relative_paths, transaction_paths, strict=True):
+            exists = path.exists() or path.is_symlink()
+            identity = _file_identity(path) if exists else None
             before = self._read_transaction_snapshot(relative_path, path)
             if relative_path == "index.json" and before is None:
                 raise ValueError("transaction requires an existing index")
+            if (before is None) != (identity is None):
+                raise ValueError("transaction file changed during snapshot")
+            if identity is not None and _file_identity(path) != identity:
+                raise ValueError("transaction file changed during snapshot")
+            file_identities[path] = identity
             files.append({"path": relative_path, "before": before})
         _atomic_write_json(
             self._journal_path,
             {"schema_version": 1, "files": files},
         )
         self._assert_transaction_parent_identities(parent_identities)
-        return parent_identities
+        return _TransactionIdentities(parent_identities, file_identities)
 
     def _restore_transaction_file(
         self,
@@ -1190,6 +1411,7 @@ class IssueRegistry:
         path: Path,
         before: dict[str, Any] | None,
         parent_identity: tuple[int, int, Path],
+        file_identity: tuple[int, int] | None,
     ) -> None:
         _assert_directory_identity(path.parent, parent_identity)
         exists = path.exists() or path.is_symlink()
@@ -1200,6 +1422,7 @@ class IssueRegistry:
                 _durable_unlink(
                     path,
                     expected_parent_identity=parent_identity,
+                    expected_file_identity=file_identity,
                 )
             return
         if exists:
@@ -1245,23 +1468,21 @@ class IssueRegistry:
 
     def _recover_transaction(
         self,
-        parent_identities: Mapping[Path, tuple[int, int, Path]] | None = None,
+        transaction_identities: _TransactionIdentities | None = None,
     ) -> None:
         if not self._journal_path.exists() and not self._journal_path.is_symlink():
             return
         entries = self._load_transaction_journal()
-        identities = (
-            dict(parent_identities)
-            if parent_identities is not None
-            else self._transaction_parent_identities(
-                [path for _, path, _ in entries]
-            )
+        transaction_paths = [path for _, path, _ in entries]
+        identities = transaction_identities or _TransactionIdentities(
+            self._transaction_parent_identities(transaction_paths),
+            {path: None for path in transaction_paths},
         )
         required_parents = {path.parent for _, path, _ in entries}
-        if not required_parents.issubset(identities):
+        if not required_parents.issubset(identities.parents):
             raise ValueError("transaction parent identity is missing")
-        self._assert_transaction_parent_identities(identities)
-        observations_identity = identities.get(self.observations_root)
+        self._assert_transaction_parent_identities(identities.parents)
+        observations_identity = identities.parents.get(self.observations_root)
         if observations_identity is not None:
             self._cleanup_observation_transaction_temps(
                 entries,
@@ -1275,32 +1496,33 @@ class IssueRegistry:
                 relative_path,
                 path,
                 before,
-                identities[path.parent],
+                identities.parents[path.parent],
+                identities.files.get(path),
             )
-        self._assert_transaction_parent_identities(identities)
+        self._assert_transaction_parent_identities(identities.parents)
         self._validate_index_matches_files()
         _durable_unlink(
             self._journal_path,
-            expected_parent_identity=identities[self.issues_root],
+            expected_parent_identity=identities.parents[self.issues_root],
         )
 
     @contextmanager
     def _transaction(
         self,
         paths: Iterable[Path],
-    ) -> Iterator[dict[Path, tuple[int, int, Path]]]:
-        parent_identities = self._begin_transaction(paths)
+    ) -> Iterator[_TransactionIdentities]:
+        identities = self._begin_transaction(paths)
         try:
-            yield parent_identities
-            self._assert_transaction_parent_identities(parent_identities)
+            yield identities
+            self._assert_transaction_parent_identities(identities.parents)
             self._validate_index_matches_files()
             _durable_unlink(
                 self._journal_path,
-                expected_parent_identity=parent_identities[self.issues_root],
+                expected_parent_identity=identities.parents[self.issues_root],
             )
         except BaseException as error:
             try:
-                self._recover_transaction(parent_identities)
+                self._recover_transaction(identities)
             except BaseException as recovery_error:
                 raise recovery_error from error
             raise
@@ -1554,16 +1776,21 @@ class IssueRegistry:
                 for source in sources.values()
                 if source is not None
             )
-            with self._transaction(transaction_paths) as parent_identities:
+            with self._transaction(transaction_paths) as identities:
                 for issue_id, issue in sorted(working.items()):
                     _atomic_write_json(destinations[issue_id], issue)
+                    identities.files[destinations[issue_id]] = _file_identity(
+                        destinations[issue_id]
+                    )
                 if marker_path is not None and marker is not None:
                     _atomic_write_json(marker_path, marker)
+                    identities.files[marker_path] = _file_identity(marker_path)
                 for issue_id, source in sources.items():
                     if source is not None and source[1] != destinations[issue_id]:
                         _durable_unlink(
                             source[1],
-                            expected_parent_identity=parent_identities[source[1].parent],
+                            expected_parent_identity=identities.parents[source[1].parent],
+                            expected_file_identity=identities.files[source[1]],
                         )
                 self._rebuild_index()
 
@@ -1718,11 +1945,13 @@ class IssueRegistry:
             destination = self._issue_path(issue_id, status)
             with self._transaction(
                 (self.index_path, source, destination)
-            ) as parent_identities:
+            ) as identities:
                 _atomic_write_json(destination, updated)
+                identities.files[destination] = _file_identity(destination)
                 _durable_unlink(
                     source,
-                    expected_parent_identity=parent_identities[source.parent],
+                    expected_parent_identity=identities.parents[source.parent],
+                    expected_file_identity=identities.files[source],
                 )
                 self._rebuild_index()
             return _defensive_copy(updated)
