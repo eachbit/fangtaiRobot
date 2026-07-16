@@ -1175,6 +1175,98 @@ class ManageEvaluationIssueCliTests(unittest.TestCase):
             self.assertTrue(error.getvalue())
             self.assertEqual(registry.load(issue_id)["status"], "verifying")
 
+    def test_cli_rejects_self_consistent_completed_zero_round_cycle(self) -> None:
+        registry, issue_id = self.create_issue()
+        registry.set_status(issue_id, "verifying")
+        cycle_path = self.create_cycle("zero-rounds", "daily")
+        state = json.loads(cycle_path.read_text(encoding="utf-8"))
+        state.update(
+            {
+                "target_rounds": 0,
+                "completed_rounds": 0,
+                "rounds": [],
+                "issue_ids": [],
+            }
+        )
+        cycle_path.write_text(json.dumps(state), encoding="utf-8")
+        error = io.StringIO()
+
+        with redirect_stderr(error):
+            code = manage_issue_cli.main(
+                [
+                    issue_id,
+                    "--status",
+                    "resolved",
+                    "--cycle-id",
+                    "zero-rounds",
+                ],
+                repository_root=self.repository_root,
+                registry_factory=IssueRegistry,
+            )
+
+        self.assertEqual(code, 2)
+        self.assertIn("positive", error.getvalue())
+        self.assertEqual(registry.load(issue_id)["status"], "verifying")
+
+    def test_cycle_loader_rejects_parent_replaced_before_state_fd_open(self) -> None:
+        cycle_id = "parent-swap"
+        state_path = self.create_cycle(cycle_id, "daily")
+        cycle_directory = state_path.parent
+        original_directory = cycle_directory.with_name(f"{cycle_id}-original")
+        outside = self.repository_root / "outside-cycle"
+        outside.mkdir()
+        (outside / "cycle.json").write_bytes(state_path.read_bytes())
+        real_open = os.open
+        swapped = False
+
+        def open_then_swap(path: object, flags: int, mode: int = 0o777) -> int:
+            nonlocal swapped
+            if Path(path) == state_path and not swapped:
+                cycle_directory.rename(original_directory)
+                if not AutonomousCycleTests.make_directory_link(cycle_directory, outside):
+                    original_directory.rename(cycle_directory)
+                    self.skipTest("directory links are unavailable")
+                swapped = True
+            return real_open(path, flags, mode)
+
+        try:
+            with (
+                mock.patch.object(manage_issue_cli.os, "open", side_effect=open_then_swap),
+                self.assertRaisesRegex(ValueError, "changed|link|reparse"),
+            ):
+                manage_issue_cli._load_verification_cycle(
+                    self.repository_root,
+                    cycle_id,
+                )
+        finally:
+            if swapped:
+                if cycle_directory.is_symlink():
+                    cycle_directory.unlink()
+                else:
+                    os.rmdir(cycle_directory)
+                original_directory.rename(cycle_directory)
+
+    def test_cli_cycle_id_is_only_valid_for_resolved_status(self) -> None:
+        registry, issue_id = self.create_issue()
+        self.create_cycle("unused-cycle", "daily")
+
+        for arguments in (
+            [issue_id, "--status", "verifying", "--cycle-id", "unused-cycle"],
+            [issue_id, "--export-regression", "--cycle-id", "unused-cycle"],
+        ):
+            error = io.StringIO()
+            with redirect_stderr(error):
+                code = manage_issue_cli.main(
+                    arguments,
+                    repository_root=self.repository_root,
+                    registry_factory=IssueRegistry,
+                )
+            self.assertEqual(code, 2)
+            self.assertIn("--cycle-id", error.getvalue())
+
+        self.assertEqual(registry.load(issue_id)["status"], "open")
+        self.assertFalse((self.evaluation_root / "candidates" / "regressions" / f"{issue_id}.json").exists())
+
     def test_cli_returns_two_for_unknown_issue(self) -> None:
         IssueRegistry(self.evaluation_root)
         error = io.StringIO()

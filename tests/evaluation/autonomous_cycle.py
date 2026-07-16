@@ -441,26 +441,20 @@ def _aggregate_issue_ids(round_records: list[dict[str, Any]]) -> list[str]:
     return result
 
 
-def _validate_state(
-    value: Any,
-    *,
-    cycle_id: str,
-    mode: str,
-    rounds: int,
-    base_seed: int,
-) -> dict[str, Any]:
+def _validate_cycle_payload(value: Any) -> dict[str, Any]:
     if type(value) is not dict or set(value) != _STATE_FIELDS:
         raise ValueError("cycle state has invalid fields")
     if type(value["schema_version"]) is not int or value["schema_version"] != _SCHEMA_VERSION:
         raise ValueError("cycle schema_version must be 1")
-    if type(value["cycle_id"]) is not str or value["cycle_id"] != cycle_id:
-        raise ValueError("cycle_id does not match existing state")
-    if type(value["mode"]) is not str or value["mode"] != mode:
-        raise ValueError("mode does not match existing cycle")
-    if type(value["target_rounds"]) is not int or value["target_rounds"] != rounds:
-        raise ValueError("rounds does not match existing cycle")
-    if type(value["base_seed"]) is not int or value["base_seed"] != base_seed:
-        raise ValueError("base_seed does not match existing cycle")
+    _validate_cycle_id(value["cycle_id"])
+    if type(value["mode"]) is not str or value["mode"] not in MODE_COUNTS:
+        raise ValueError("cycle mode is invalid")
+    rounds = value["target_rounds"]
+    if type(rounds) is not int or rounds <= 0:
+        raise ValueError("target_rounds must be a positive integer")
+    base_seed = value["base_seed"]
+    if type(base_seed) is not int:
+        raise ValueError("base_seed must be an integer")
     if type(value["status"]) is not str or value["status"] not in _CYCLE_STATUSES:
         raise ValueError("cycle status is invalid")
     if type(value["commit_sha"]) is not str or not value["commit_sha"]:
@@ -493,6 +487,47 @@ def _validate_state(
     ):
         raise ValueError("finished cycle contains a running round")
     return value
+
+
+def _validate_completed_cycle_payload(
+    value: Any,
+    *,
+    cycle_id: str,
+) -> dict[str, Any]:
+    state = _validate_cycle_payload(value)
+    if state["cycle_id"] != cycle_id:
+        raise ValueError("cycle_id does not match cycle state")
+    if state["mode"] not in {"daily", "deep"}:
+        raise ValueError("verification cycle must use daily or deep mode")
+    if state["status"] != "completed":
+        raise ValueError("verification cycle must be completed")
+    if state["completed_rounds"] != state["target_rounds"]:
+        raise ValueError("verification cycle must complete every target round")
+    if len(state["rounds"]) != state["target_rounds"] or any(
+        record["status"] != "completed" for record in state["rounds"]
+    ):
+        raise ValueError("verification cycle rounds must all be completed")
+    return state
+
+
+def _validate_state(
+    value: Any,
+    *,
+    cycle_id: str,
+    mode: str,
+    rounds: int,
+    base_seed: int,
+) -> dict[str, Any]:
+    state = _validate_cycle_payload(value)
+    if state["cycle_id"] != cycle_id:
+        raise ValueError("cycle_id does not match existing state")
+    if state["mode"] != mode:
+        raise ValueError("mode does not match existing cycle")
+    if state["target_rounds"] != rounds:
+        raise ValueError("rounds does not match existing cycle")
+    if state["base_seed"] != base_seed:
+        raise ValueError("base_seed does not match existing cycle")
+    return state
 
 
 def _load_state(

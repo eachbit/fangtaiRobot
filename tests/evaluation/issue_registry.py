@@ -241,8 +241,133 @@ def issue_fingerprint(
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:24]
 
 
+def _directory_identity(path: Path) -> tuple[int, int, Path]:
+    _assert_no_link_ancestors(path)
+    metadata = path.lstat()
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    if stat.S_ISLNK(metadata.st_mode) or (reparse_flag and attributes & reparse_flag):
+        raise ValueError("issue registry path must not contain links or reparse points")
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError("issue registry path must be a directory")
+    resolved = path.resolve()
+    current = path.lstat()
+    current_attributes = getattr(current, "st_file_attributes", 0)
+    if (
+        stat.S_ISLNK(current.st_mode)
+        or (reparse_flag and current_attributes & reparse_flag)
+        or not stat.S_ISDIR(current.st_mode)
+        or (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino)
+    ):
+        raise ValueError("issue registry directory changed during identity check")
+    return metadata.st_dev, metadata.st_ino, resolved
+
+
+def _assert_directory_identity(
+    path: Path,
+    expected: tuple[int, int, Path],
+) -> None:
+    try:
+        actual = _directory_identity(path)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise ValueError("issue registry directory changed during file operation") from exc
+    if actual != expected:
+        raise ValueError("issue registry directory changed during file operation")
+
+
+def _is_unsupported_windows_directory_sync(error: OSError) -> bool:
+    if os.name != "nt":
+        return False
+    return error.errno in {
+        errno.EACCES,
+        errno.EINVAL,
+        getattr(errno, "ENOTSUP", errno.EINVAL),
+    } or getattr(error, "winerror", None) in {1, 5, 50}
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_DIRECTORY", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        if _is_unsupported_windows_directory_sync(error):
+            return
+        raise
+    try:
+        try:
+            os.fsync(descriptor)
+        except OSError as error:
+            if not _is_unsupported_windows_directory_sync(error):
+                raise
+    finally:
+        os.close(descriptor)
+
+
+def _durable_unlink(path: Path) -> None:
+    path.unlink()
+    _fsync_directory(path.parent)
+
+
+def _unlink_if_identity(path: Path, identity: tuple[int, int]) -> None:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return
+    if (
+        not _is_link_or_reparse_point(path)
+        and stat.S_ISREG(metadata.st_mode)
+        and (metadata.st_dev, metadata.st_ino) == identity
+    ):
+        _durable_unlink(path)
+
+
+def _read_regular_file_bytes(
+    path: Path,
+    parent_identity: tuple[int, int, Path],
+) -> bytes:
+    _assert_directory_identity(path.parent, parent_identity)
+    if _is_link_or_reparse_point(path):
+        raise ValueError("file must not be a link or reparse point")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError as exc:
+        raise ValueError("file changed during read") from exc
+    try:
+        opened_metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(opened_metadata.st_mode):
+            raise ValueError("path must be a regular file")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    finally:
+        os.close(descriptor)
+
+    _assert_directory_identity(path.parent, parent_identity)
+    try:
+        current_metadata = path.lstat()
+    except FileNotFoundError as exc:
+        raise ValueError("file changed during read") from exc
+    if (
+        _is_link_or_reparse_point(path)
+        or not stat.S_ISREG(current_metadata.st_mode)
+        or (current_metadata.st_dev, current_metadata.st_ino)
+        != (opened_metadata.st_dev, opened_metadata.st_ino)
+    ):
+        raise ValueError("file changed during read")
+    return b"".join(chunks)
+
+
 def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
+    parent_identity = _directory_identity(path.parent)
+    if _is_link_or_reparse_point(path):
+        raise ValueError("atomic write destination must not be a link or reparse point")
     temporary_path: Path | None = None
+    temporary_identity: tuple[int, int] | None = None
     try:
         with tempfile.NamedTemporaryFile(
             "w",
@@ -264,14 +389,49 @@ def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
             temporary.write("\n")
             temporary.flush()
             os.fsync(temporary.fileno())
+            metadata = os.fstat(temporary.fileno())
+            temporary_identity = (metadata.st_dev, metadata.st_ino)
+        _assert_directory_identity(path.parent, parent_identity)
+        if _is_link_or_reparse_point(path):
+            raise ValueError("atomic write destination must not be a link or reparse point")
         os.replace(temporary_path, path)
+        try:
+            _assert_directory_identity(path.parent, parent_identity)
+            metadata = path.lstat()
+            if (
+                _is_link_or_reparse_point(path)
+                or not stat.S_ISREG(metadata.st_mode)
+                or (metadata.st_dev, metadata.st_ino) != temporary_identity
+            ):
+                raise ValueError("atomic write destination changed during replace")
+            _fsync_directory(path.parent)
+            _assert_directory_identity(path.parent, parent_identity)
+        except ValueError:
+            if temporary_identity is not None:
+                _unlink_if_identity(path, temporary_identity)
+            raise
     finally:
         if temporary_path is not None and temporary_path.exists():
-            temporary_path.unlink()
+            if temporary_identity is None:
+                _durable_unlink(temporary_path)
+            else:
+                _unlink_if_identity(temporary_path, temporary_identity)
 
 
-def _atomic_create_json(path: Path, value: Mapping[str, Any]) -> bool:
+def _atomic_create_json(
+    path: Path,
+    value: Mapping[str, Any],
+    *,
+    parent_identity: tuple[int, int, Path] | None = None,
+) -> bool:
+    if parent_identity is None:
+        parent_identity = _directory_identity(path.parent)
+    else:
+        _assert_directory_identity(path.parent, parent_identity)
+    if _is_link_or_reparse_point(path):
+        raise ValueError("atomic create destination must not be a link or reparse point")
     temporary_path: Path | None = None
+    temporary_identity: tuple[int, int] | None = None
     try:
         with tempfile.NamedTemporaryFile(
             "w",
@@ -293,14 +453,37 @@ def _atomic_create_json(path: Path, value: Mapping[str, Any]) -> bool:
             temporary.write("\n")
             temporary.flush()
             os.fsync(temporary.fileno())
+            metadata = os.fstat(temporary.fileno())
+            temporary_identity = (metadata.st_dev, metadata.st_ino)
+        _assert_directory_identity(path.parent, parent_identity)
+        if _is_link_or_reparse_point(path):
+            raise ValueError("atomic create destination must not be a link or reparse point")
         try:
             os.link(temporary_path, path)
         except FileExistsError:
             return False
+        try:
+            _assert_directory_identity(path.parent, parent_identity)
+            metadata = path.lstat()
+            if (
+                _is_link_or_reparse_point(path)
+                or not stat.S_ISREG(metadata.st_mode)
+                or (metadata.st_dev, metadata.st_ino) != temporary_identity
+            ):
+                raise ValueError("atomic create destination changed during link")
+            _fsync_directory(path.parent)
+            _assert_directory_identity(path.parent, parent_identity)
+        except ValueError:
+            if temporary_identity is not None:
+                _unlink_if_identity(path, temporary_identity)
+            raise
         return True
     finally:
         if temporary_path is not None and temporary_path.exists():
-            temporary_path.unlink()
+            if temporary_identity is None:
+                _durable_unlink(temporary_path)
+            else:
+                _unlink_if_identity(temporary_path, temporary_identity)
 
 
 class IssueRegistry:
@@ -317,6 +500,8 @@ class IssueRegistry:
             status: self.issues_root / status for status in sorted(ISSUE_STATUSES)
         }
         self.observations_root = self.issues_root / "observations"
+        self.candidates_root = self.evaluation_root / "candidates"
+        self.regressions_root = self.candidates_root / "regressions"
         self.index_path = self.issues_root / "index.json"
         self._lock_path = self.issues_root / ".registry.lock"
         self._journal_path = self.issues_root / ".transaction.json"
@@ -330,6 +515,8 @@ class IssueRegistry:
             self.issues_root,
             *(self.status_directories[status] for status in sorted(ISSUE_STATUSES)),
             self.observations_root,
+            self.candidates_root,
+            self.regressions_root,
         ]
         for path in paths:
             if _is_link_or_reparse_point(path):
@@ -346,6 +533,8 @@ class IssueRegistry:
             self.issues_root,
             *(self.status_directories[status] for status in sorted(ISSUE_STATUSES)),
             self.observations_root,
+            self.candidates_root,
+            self.regressions_root,
         ]
         for path in paths:
             if _is_link_or_reparse_point(path):
@@ -367,6 +556,11 @@ class IssueRegistry:
                 raise ValueError("issue status directory escapes issues root")
         if self.observations_root.resolve().parent != resolved_issues:
             raise ValueError("observations directory escapes issues root")
+        resolved_candidates = self.candidates_root.resolve()
+        if resolved_candidates.parent != resolved_root:
+            raise ValueError("candidates path escapes evaluation_root")
+        if self.regressions_root.resolve().parent != resolved_candidates:
+            raise ValueError("regressions path escapes candidates root")
 
         for path in (self.index_path, self._lock_path, self._journal_path):
             if _is_link_or_reparse_point(path):
@@ -379,6 +573,7 @@ class IssueRegistry:
         self._assert_layout()
         descriptor = self._open_lock_descriptor()
         acquired = False
+        primary_error: BaseException | None = None
         try:
             for attempt in range(_LOCK_RETRIES):
                 try:
@@ -398,18 +593,30 @@ class IssueRegistry:
                 raise TimeoutError("timed out waiting for issue registry lock")
             self._recover_transaction()
             yield
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
+            release_error: OSError | None = None
             if acquired:
                 try:
                     self._release_advisory_lock(descriptor)
                 except OSError as error:
                     if not self._is_closed_descriptor(error):
-                        raise
+                        release_error = error
+            close_error: OSError | None = None
             try:
                 os.close(descriptor)
             except OSError as error:
                 if not self._is_closed_descriptor(error):
-                    raise
+                    close_error = error
+            if primary_error is None:
+                if close_error is not None:
+                    if release_error is not None:
+                        raise close_error from release_error
+                    raise close_error
+                if release_error is not None:
+                    raise release_error
 
     def _open_lock_descriptor(self) -> int:
         flags = os.O_CREAT | os.O_RDWR
@@ -930,7 +1137,7 @@ class IssueRegistry:
             raise ValueError("transaction file must not be a link or reparse point")
         if before is None:
             if exists:
-                path.unlink()
+                _durable_unlink(path)
             return
         if exists:
             current = self._read_transaction_snapshot(relative_path, path)
@@ -965,7 +1172,7 @@ class IssueRegistry:
                 )
             if not stat.S_ISREG(metadata.st_mode):
                 raise ValueError("observation temporary path must be a regular file")
-            path.unlink()
+            _durable_unlink(path)
 
     def _recover_transaction(self) -> None:
         if not self._journal_path.exists() and not self._journal_path.is_symlink():
@@ -978,7 +1185,7 @@ class IssueRegistry:
         ):
             self._restore_transaction_file(relative_path, path, before)
         self._validate_index_matches_files()
-        self._journal_path.unlink()
+        _durable_unlink(self._journal_path)
 
     @contextmanager
     def _transaction(self, paths: Iterable[Path]) -> Iterator[None]:
@@ -986,7 +1193,7 @@ class IssueRegistry:
         try:
             yield
             self._validate_index_matches_files()
-            self._journal_path.unlink()
+            _durable_unlink(self._journal_path)
         except BaseException as error:
             try:
                 self._recover_transaction()
@@ -1227,7 +1434,7 @@ class IssueRegistry:
                     _atomic_write_json(marker_path, marker)
                 for issue_id, source in sources.items():
                     if source is not None and source[1] != destinations[issue_id]:
-                        source[1].unlink()
+                        _durable_unlink(source[1])
                 self._rebuild_index()
 
         return issue_ids
@@ -1241,39 +1448,49 @@ class IssueRegistry:
             return _defensive_copy(found[2])
 
     def _regression_candidate_path(self, issue_id: str) -> Path:
-        candidates_root = self.evaluation_root / "candidates"
-        regressions_root = candidates_root / "regressions"
-        for path in (candidates_root, regressions_root):
-            if _is_link_or_reparse_point(path):
-                raise ValueError(
-                    "regression candidate path must not contain links or reparse points"
-                )
-            path.mkdir(exist_ok=True)
-            if _is_link_or_reparse_point(path) or not path.is_dir():
-                raise ValueError("regression candidate path must be a real directory")
-        _assert_no_link_ancestors(regressions_root)
-        resolved_evaluation = self.evaluation_root.resolve()
-        resolved_candidates = candidates_root.resolve()
-        resolved_regressions = regressions_root.resolve()
-        if resolved_candidates.parent != resolved_evaluation:
-            raise ValueError("candidates path escapes evaluation_root")
-        if resolved_regressions.parent != resolved_candidates:
-            raise ValueError("regressions path escapes candidates root")
-        path = regressions_root / f"{issue_id}.json"
+        self._assert_layout()
+        path = self.regressions_root / f"{issue_id}.json"
         if _is_link_or_reparse_point(path):
             raise ValueError("regression candidate must not be a link or reparse point")
-        if path.resolve(strict=False).parent != resolved_regressions:
+        if path.resolve(strict=False).parent != self.regressions_root.resolve():
             raise ValueError("regression candidate path escapes regressions root")
         return path
 
     @staticmethod
-    def _assert_matching_candidate(path: Path, candidate: Mapping[str, Any]) -> None:
-        if _is_link_or_reparse_point(path):
-            raise ValueError("regression candidate must not be a link or reparse point")
-        if not path.is_file():
-            raise ValueError("regression candidate path must be a regular file")
+    def _validated_regression_source(issue: Mapping[str, Any]) -> Scenario:
+        scenario = Scenario.from_dict(issue["regression_source"])
+        checks = (
+            (
+                scenario.scenario_id in issue["scenario_ids"],
+                "scenario_id is not tracked by the issue",
+            ),
+            (scenario.seed in issue["seeds"], "seed is not tracked by the issue"),
+            (scenario.intent in issue["intents"], "intent is not tracked by the issue"),
+            (
+                scenario.persona.primary_bucket in issue["health_buckets"],
+                "health bucket is not tracked by the issue",
+            ),
+            (
+                scenario.expectation.to_dict() == issue["expected"],
+                "expectation does not match expected",
+            ),
+        )
+        for valid, message in checks:
+            if not valid:
+                raise ValueError(f"regression source {message}")
+        return scenario
+
+    @staticmethod
+    def _assert_matching_candidate(
+        path: Path,
+        candidate: Mapping[str, Any],
+        parent_identity: tuple[int, int, Path],
+    ) -> None:
+        raw = _read_regular_file_bytes(path, parent_identity)
         try:
-            existing = _strict_json_object_from_path(path)
+            existing = _strict_json_loads(raw.decode("utf-8"))
+            if type(existing) is not dict:
+                raise ValueError("regression candidate must be a JSON object")
             Scenario.from_dict(existing)
         except (ValueError, UnicodeDecodeError) as exc:
             raise FileExistsError(
@@ -1293,17 +1510,28 @@ class IssueRegistry:
             issue = found[2]
             if issue["holdout"]:
                 raise ValueError("holdout issues cannot be exported as regression candidates")
+            minimized_messages = issue["minimized_messages"]
+            if not minimized_messages or any(not item for item in minimized_messages):
+                raise ValueError("minimized_messages must contain non-empty strings")
 
-            candidate_payload = _defensive_copy(issue["regression_source"])
+            source = self._validated_regression_source(issue)
+            candidate_payload = source.to_dict()
             candidate_payload["scenario_id"] = f"regression-{issue['fingerprint']}"
-            candidate_payload["messages"] = list(issue["minimized_messages"])
+            candidate_payload["messages"] = list(minimized_messages)
             candidate = Scenario.from_dict(candidate_payload).to_dict()
+            parent_identity = _directory_identity(self.regressions_root)
             path = self._regression_candidate_path(issue_id)
+            _assert_directory_identity(self.regressions_root, parent_identity)
             if path.exists() or path.is_symlink():
-                self._assert_matching_candidate(path, candidate)
+                self._assert_matching_candidate(path, candidate, parent_identity)
                 return path
-            if not _atomic_create_json(path, candidate):
-                self._assert_matching_candidate(path, candidate)
+            if not _atomic_create_json(
+                path,
+                candidate,
+                parent_identity=parent_identity,
+            ):
+                self._assert_matching_candidate(path, candidate, parent_identity)
+            _assert_directory_identity(self.regressions_root, parent_identity)
             return path
 
     @staticmethod
@@ -1313,13 +1541,14 @@ class IssueRegistry:
     ) -> None:
         if not isinstance(verification_cycle, Mapping):
             raise ValueError("resolving an issue requires a verification cycle")
-        if verification_cycle.get("status") != "completed":
-            raise ValueError("verification cycle must be completed")
-        if verification_cycle.get("mode") not in {"daily", "deep"}:
-            raise ValueError("verification cycle must use daily or deep mode")
-        issue_ids = verification_cycle.get("issue_ids")
-        if type(issue_ids) is not list or any(type(value) is not str for value in issue_ids):
-            raise ValueError("verification cycle issue_ids must be an array of strings")
+        from tests.evaluation.autonomous_cycle import _validate_completed_cycle_payload
+
+        cycle = _defensive_copy(verification_cycle)
+        validated = _validate_completed_cycle_payload(
+            cycle,
+            cycle_id=cycle.get("cycle_id"),
+        )
+        issue_ids = validated["issue_ids"]
         if issue_id in issue_ids:
             raise ValueError("issue recurred in the verification cycle")
 
@@ -1359,6 +1588,6 @@ class IssueRegistry:
             destination = self._issue_path(issue_id, status)
             with self._transaction((self.index_path, source, destination)):
                 _atomic_write_json(destination, updated)
-                source.unlink()
+                _durable_unlink(source)
                 self._rebuild_index()
             return _defensive_copy(updated)
