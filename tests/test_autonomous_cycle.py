@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 import subprocess
 import tempfile
@@ -524,6 +525,41 @@ class AutonomousCycleTests(unittest.TestCase):
             markdown,
         )
         self.assertIn("| 1 | 40 | completed | 4 | 4 | 0 | 100.0 | issue-1 |", markdown)
+
+    def test_summary_elapsed_overflow_never_persists_completed_and_can_resume(self) -> None:
+        factory = RecordingFactory()
+
+        stopped = self.execute_cycle(
+            cycle_id="summary-overflow",
+            rounds=2,
+            factory=factory,
+            clock=StepClock(0.0, 9e304, 0.0, 9e304),
+        )
+
+        self.assertEqual(stopped["status"], "stopped")
+        self.assertNotEqual(self.load_cycle("summary-overflow")["status"], "completed")
+        summary_path = self.cycle_dir("summary-overflow") / "summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        self.assertEqual(summary["status"], "stopped")
+        self.assertTrue(math.isfinite(summary["elapsed_ms"]))
+        self.assertTrue(math.isfinite(summary["average_elapsed_ms"]))
+        self.assertTrue(
+            any(
+                record["error_type"] == "OverflowError"
+                for record in stopped["rounds"]
+            )
+        )
+
+        recovered = self.execute_cycle(
+            cycle_id="summary-overflow",
+            rounds=2,
+            factory=factory,
+            clock=StepClock(1.0, 1.1),
+        )
+
+        self.assertEqual(recovered["status"], "completed")
+        self.assertEqual(recovered["completed_rounds"], 2)
+        self.assertEqual(len(factory.calls), 3)
 
     def test_stopped_cycle_summary_matches_partial_state(self) -> None:
         state = self.execute_cycle(

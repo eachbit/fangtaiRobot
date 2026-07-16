@@ -625,8 +625,14 @@ def _failure_elapsed_ms(
 
 def _summary(state: dict[str, Any]) -> dict[str, Any]:
     completed = [item for item in state["rounds"] if item["status"] == "completed"]
-    elapsed = round(sum(float(item["elapsed_ms"]) for item in completed), 2)
-    return {
+    try:
+        elapsed = math.fsum(float(item["elapsed_ms"]) for item in completed)
+    except OverflowError as exc:
+        raise OverflowError("summary elapsed_ms overflowed") from exc
+    if not math.isfinite(elapsed):
+        raise ValueError("summary elapsed_ms must be finite")
+    elapsed = round(elapsed, 2)
+    summary = {
         "schema_version": _SCHEMA_VERSION,
         "cycle_id": state["cycle_id"],
         "mode": state["mode"],
@@ -644,6 +650,84 @@ def _summary(state: dict[str, Any]) -> dict[str, Any]:
         "updated_at": state["updated_at"],
         "rounds": [dict(item) for item in state["rounds"]],
     }
+    return _validate_summary(summary, state)
+
+
+def _validate_summary(
+    value: Any,
+    state: Mapping[str, Any],
+) -> dict[str, Any]:
+    fields = {
+        "schema_version",
+        "cycle_id",
+        "mode",
+        "status",
+        "base_seed",
+        "target_rounds",
+        "completed_rounds",
+        "total_scenarios",
+        "passed",
+        "failures",
+        "issue_ids",
+        "elapsed_ms",
+        "average_elapsed_ms",
+        "created_at",
+        "updated_at",
+        "rounds",
+    }
+    if type(value) is not dict or set(value) != fields:
+        raise ValueError("summary has invalid fields")
+    for field in (
+        "cycle_id",
+        "mode",
+        "status",
+        "base_seed",
+        "target_rounds",
+        "completed_rounds",
+        "issue_ids",
+        "created_at",
+        "updated_at",
+        "rounds",
+    ):
+        if value[field] != state[field]:
+            raise ValueError(f"summary {field} does not match cycle state")
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+        raise ValueError("summary schema_version must be 1")
+    for field in (
+        "target_rounds",
+        "completed_rounds",
+        "total_scenarios",
+        "passed",
+        "failures",
+    ):
+        number = value[field]
+        if type(number) is not int or number < 0:
+            raise ValueError(f"summary {field} must be a non-negative integer")
+        try:
+            finite = math.isfinite(number)
+        except OverflowError as exc:
+            raise OverflowError(f"summary {field} overflowed") from exc
+        if not finite:
+            raise ValueError(f"summary {field} must be finite")
+    if value["passed"] + value["failures"] != value["total_scenarios"]:
+        raise ValueError("summary scenario totals are inconsistent")
+    if value["completed_rounds"] > value["target_rounds"]:
+        raise ValueError("summary completed_rounds exceeds target_rounds")
+    for field in ("elapsed_ms", "average_elapsed_ms"):
+        number = value[field]
+        if type(number) not in (int, float) or not math.isfinite(number) or number < 0:
+            raise ValueError(f"summary {field} must be finite and non-negative")
+    expected_average = (
+        round(value["elapsed_ms"] / value["completed_rounds"], 2)
+        if value["completed_rounds"]
+        else 0.0
+    )
+    if value["average_elapsed_ms"] != expected_average:
+        raise ValueError("summary average_elapsed_ms is inconsistent")
+    _validate_timestamp(value["created_at"], "summary.created_at")
+    _validate_timestamp(value["updated_at"], "summary.updated_at")
+    _validate_issue_ids(value["issue_ids"], "summary.issue_ids")
+    return value
 
 
 def _summary_markdown(summary: Mapping[str, Any]) -> str:
@@ -680,10 +764,75 @@ def _summary_markdown(summary: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _write_summaries(cycle_dir: Path, state: dict[str, Any]) -> None:
-    summary = _summary(state)
+def _write_summaries(
+    cycle_dir: Path,
+    state: dict[str, Any],
+    summary: dict[str, Any] | None = None,
+) -> None:
+    summary = _summary(state) if summary is None else _validate_summary(summary, state)
     _atomic_write_json(cycle_dir / "summary.json", summary)
     _atomic_write_text(cycle_dir / "summary.md", _summary_markdown(summary))
+
+
+def _prepare_terminal_summary(
+    state: dict[str, Any],
+    status: str,
+) -> dict[str, Any]:
+    state["status"] = status
+    try:
+        return _summary(state)
+    except (OverflowError, ValueError) as error:
+        for record in reversed(state["rounds"]):
+            if record["status"] != "completed":
+                continue
+            record.update(
+                {
+                    "status": "failed",
+                    "total": None,
+                    "passed": None,
+                    "failures": None,
+                    "elapsed_ms": 0.0,
+                    "issue_ids": [],
+                    "error_type": type(error).__name__,
+                    "error": f"summary aggregation failed: {error}",
+                }
+            )
+            _replace_round(state, record)
+            state["status"] = "stopped"
+            try:
+                return _summary(state)
+            except (OverflowError, ValueError):
+                continue
+        raise
+
+
+def _finalize_cycle(
+    cycle_dir: Path,
+    state_path: Path,
+    state: dict[str, Any],
+    status: str,
+    utc_now: Callable[[], str],
+    *,
+    cycle_id: str,
+    mode: str,
+    rounds: int,
+    base_seed: int,
+) -> dict[str, Any]:
+    state["updated_at"] = utc_now()
+    _validate_timestamp(state["updated_at"], "updated_at")
+    summary = _prepare_terminal_summary(state, status)
+    _write_state(
+        state_path,
+        state,
+        utc_now,
+        cycle_id=cycle_id,
+        mode=mode,
+        rounds=rounds,
+        base_seed=base_seed,
+        update_timestamp=False,
+    )
+    _write_summaries(cycle_dir, state, summary)
+    return state
 
 
 def run_cycle(
@@ -848,18 +997,17 @@ def run_cycle(
                 )
                 _replace_round(state, record)
                 if not continue_on_error:
-                    state["status"] = "stopped"
-                    _write_state(
+                    return _finalize_cycle(
+                        cycle_dir,
                         state_path,
                         state,
+                        "stopped",
                         utc_now,
                         cycle_id=cycle_id,
                         mode=mode,
                         rounds=rounds,
                         base_seed=base_seed,
                     )
-                    _write_summaries(cycle_dir, state)
-                    return state
             _replace_round(state, record)
             _write_state(
                 state_path,
@@ -871,22 +1019,22 @@ def run_cycle(
                 base_seed=base_seed,
             )
 
-        state["status"] = (
+        status = (
             "failed"
             if any(record["status"] == "failed" for record in state["rounds"])
             else "completed"
         )
-        _write_state(
+        return _finalize_cycle(
+            cycle_dir,
             state_path,
             state,
+            status,
             utc_now,
             cycle_id=cycle_id,
             mode=mode,
             rounds=rounds,
             base_seed=base_seed,
         )
-        _write_summaries(cycle_dir, state)
-        return state
 
 
 __all__ = ["CYCLE_ID_PATTERN", "run_cycle"]
