@@ -43,6 +43,7 @@ _OBSERVATION_TEMP_PATTERN = re.compile(
 _LOCK_RETRIES = 100
 _LOCK_RETRY_DELAY_SECONDS = 0.01
 _WINDOWS_DELETE = 0x00010000
+_WINDOWS_GENERIC_READ = 0x80000000
 _WINDOWS_FILE_READ_ATTRIBUTES = 0x00000080
 _WINDOWS_FILE_SHARE_READ = 0x00000001
 _WINDOWS_FILE_SHARE_WRITE = 0x00000002
@@ -432,6 +433,34 @@ def _windows_handle_identity(handle: int) -> tuple[tuple[int, int], int]:
     )
 
 
+def _windows_read_handle(handle: int) -> bytes:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    read_file = kernel32.ReadFile
+    read_file.argtypes = (
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    )
+    read_file.restype = wintypes.BOOL
+    chunks: list[bytes] = []
+    buffer = ctypes.create_string_buffer(65536)
+    while True:
+        bytes_read = wintypes.DWORD()
+        if not read_file(
+            handle,
+            buffer,
+            len(buffer),
+            ctypes.byref(bytes_read),
+            None,
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if bytes_read.value == 0:
+            return b"".join(chunks)
+        chunks.append(buffer.raw[: bytes_read.value])
+
+
 def _windows_mark_handle_for_deletion(handle: int) -> None:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     set_information = kernel32.SetFileInformationByHandle
@@ -481,6 +510,34 @@ def _windows_file_identity(path: Path) -> tuple[int, int]:
     try:
         identity, attributes = _windows_handle_identity(handle)
         return _validate_windows_file_information(identity, attributes)
+    finally:
+        _windows_close_handle(handle)
+
+
+def _read_windows_failure_file(
+    path: Path,
+    parent_identity: tuple[int, int, Path],
+    expected_file_identity: tuple[int, int],
+) -> bytes:
+    _assert_directory_identity(path.parent, parent_identity)
+    handle = _windows_open_file_handle(
+        path,
+        _WINDOWS_GENERIC_READ | _WINDOWS_FILE_READ_ATTRIBUTES,
+    )
+    try:
+        identity, attributes = _windows_handle_identity(handle)
+        actual_identity = _validate_windows_file_information(identity, attributes)
+        if actual_identity != expected_file_identity:
+            raise ValueError("failure file changed before read")
+        data = _windows_read_handle(handle)
+        final_identity, final_attributes = _windows_handle_identity(handle)
+        validated_final = _validate_windows_file_information(
+            final_identity,
+            final_attributes,
+        )
+        if validated_final != actual_identity:
+            raise ValueError("failure file changed during read")
+        return data
     finally:
         _windows_close_handle(handle)
 
@@ -1825,23 +1882,34 @@ class IssueRegistry:
         _assert_directory_identity(failure_path.parent, parent_identity)
         if _is_link_or_reparse_point(failure_path):
             raise ValueError("failure file must not be a link or reparse point")
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(failure_path, flags)
-        try:
-            opened_metadata = os.fstat(descriptor)
-            if not stat.S_ISREG(opened_metadata.st_mode):
-                raise ValueError("failure file path must be a regular file")
-            chunks: list[bytes] = []
-            while True:
-                chunk = os.read(descriptor, 65536)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-        finally:
-            os.close(descriptor)
+        if os.name == "nt":
+            expected_file_identity = _file_identity(failure_path)
+            _assert_directory_identity(failure_path.parent, parent_identity)
+            data = _read_windows_failure_file(
+                failure_path,
+                parent_identity,
+                expected_file_identity,
+            )
+        else:
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(failure_path, flags)
+            try:
+                opened_metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(opened_metadata.st_mode):
+                    raise ValueError("failure file path must be a regular file")
+                chunks: list[bytes] = []
+                while True:
+                    chunk = os.read(descriptor, 65536)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                data = b"".join(chunks)
+            finally:
+                os.close(descriptor)
         _assert_directory_identity(failure_path.parent, parent_identity)
         return self.ingest_failure_bytes(
-            b"".join(chunks),
+            data,
             observed_at=observed_at,
             observation_id=observation_id,
         )

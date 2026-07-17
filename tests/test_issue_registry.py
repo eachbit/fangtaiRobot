@@ -111,6 +111,22 @@ class IssueRegistryTests(unittest.TestCase):
             return result.returncode == 0
 
     @staticmethod
+    def make_file_link(link: Path, target: Path) -> bool:
+        try:
+            link.symlink_to(target)
+            return True
+        except OSError:
+            if os.name != "nt":
+                return False
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", str(link), str(target)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+    @staticmethod
     def completed_cycle(
         issue_ids: list[str] | None = None,
         *,
@@ -237,6 +253,7 @@ class IssueRegistryTests(unittest.TestCase):
         self.assertEqual(registry.load(first[0])["occurrences"], 1)
         self.assertEqual(len(list(registry.observations_root.glob("*.json"))), 1)
 
+    @unittest.skipIf(os.name == "nt", "POSIX descriptor snapshot test")
     def test_ingest_failure_file_uses_open_descriptor_snapshot_during_replacement(self) -> None:
         registry = IssueRegistry(self.root)
         target = self.write_public_failure_file(
@@ -278,6 +295,130 @@ class IssueRegistryTests(unittest.TestCase):
             "blocking.snapshot-a",
         )
         self.assertEqual(len(list(registry.observations_root.glob("*.json"))), 1)
+
+    @unittest.skipUnless(os.name == "nt", "Windows handle-bound read test")
+    def test_windows_ingest_rejects_symlink_replacement_after_identity_check(self) -> None:
+        registry = IssueRegistry(self.root)
+        target = self.write_public_failure_file(
+            self.root.parent,
+            self.failure("windows-a", code="blocking.windows-a"),
+        )
+        outside = self.write_public_failure_file(
+            self.root.parent,
+            self.failure(
+                "windows-secret",
+                code="blocking.windows-secret",
+                original_messages=("EXTERNAL-SECRET",),
+                minimized_messages=("EXTERNAL-SECRET",),
+            ),
+        )
+        original = target.with_name(f"{target.stem}-original.json")
+        real_identity = issue_registry._file_identity
+        real_open_handle = issue_registry._windows_open_file_handle
+        real_close_handle = issue_registry._windows_close_handle
+        opened: list[int] = []
+        closed: list[int] = []
+        accesses: list[int] = []
+        swapped = False
+
+        def identity_then_replace(path: Path) -> tuple[int, int]:
+            nonlocal swapped
+            identity = real_identity(path)
+            if Path(path) == target and not swapped:
+                target.rename(original)
+                if not self.make_file_link(target, outside):
+                    original.rename(target)
+                    self.skipTest("file symlinks are unavailable")
+                swapped = True
+            return identity
+
+        def capture_open(path: Path, desired_access: int) -> int:
+            handle = real_open_handle(path, desired_access)
+            opened.append(handle)
+            accesses.append(desired_access)
+            return handle
+
+        def capture_close(handle: int) -> None:
+            closed.append(handle)
+            real_close_handle(handle)
+
+        error: ValueError | None = None
+        with (
+            mock.patch.object(
+                issue_registry,
+                "_file_identity",
+                side_effect=identity_then_replace,
+            ),
+            mock.patch.object(
+                issue_registry,
+                "_windows_open_file_handle",
+                side_effect=capture_open,
+            ),
+            mock.patch.object(
+                issue_registry,
+                "_windows_close_handle",
+                side_effect=capture_close,
+            ),
+        ):
+            try:
+                registry.ingest_failure_file(
+                    target,
+                    observed_at="2026-07-16T00:00:00Z",
+                )
+            except ValueError as raised:
+                error = raised
+
+        self.assertTrue(swapped)
+        self.assertIsNotNone(error)
+        self.assertRegex(str(error), "reparse|link")
+        self.assertGreaterEqual(len(opened), 2)
+        self.assertEqual(opened, closed)
+        self.assertTrue(any(access & 0x80000000 for access in accesses))
+        self.assertEqual(list(registry.status_directories["open"].glob("*.json")), [])
+        self.assertEqual(list(registry.observations_root.glob("*.json")), [])
+        self.assertNotIn("EXTERNAL-SECRET", registry.index_path.read_text(encoding="utf-8"))
+
+    @unittest.skipUnless(os.name == "nt", "Windows handle-bound read test")
+    def test_windows_ingest_reads_regular_file_through_owned_handle(self) -> None:
+        registry = IssueRegistry(self.root)
+        target = self.write_public_failure_file(self.root.parent)
+        real_open_handle = issue_registry._windows_open_file_handle
+        real_close_handle = issue_registry._windows_close_handle
+        opened: list[int] = []
+        closed: list[int] = []
+        accesses: list[int] = []
+
+        def capture_open(path: Path, desired_access: int) -> int:
+            handle = real_open_handle(path, desired_access)
+            opened.append(handle)
+            accesses.append(desired_access)
+            return handle
+
+        def capture_close(handle: int) -> None:
+            closed.append(handle)
+            real_close_handle(handle)
+
+        with (
+            mock.patch.object(
+                issue_registry,
+                "_windows_open_file_handle",
+                side_effect=capture_open,
+            ),
+            mock.patch.object(
+                issue_registry,
+                "_windows_close_handle",
+                side_effect=capture_close,
+            ),
+        ):
+            touched = registry.ingest_failure_file(
+                target,
+                observed_at="2026-07-16T00:00:00Z",
+            )
+
+        self.assertEqual(len(touched), 1)
+        self.assertGreaterEqual(len(opened), 2)
+        self.assertEqual(opened, closed)
+        self.assertTrue(any(access & 0x80000000 for access in accesses))
 
     def test_ingest_failure_file_rejects_holdout_and_legacy_artifacts(self) -> None:
         registry = IssueRegistry(self.root)
