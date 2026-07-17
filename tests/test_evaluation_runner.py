@@ -505,6 +505,158 @@ class EvaluationReportTests(unittest.TestCase):
                 '{"stale":true}',
             )
 
+    @unittest.skipUnless(os.name == "nt", "Windows bound-directory write test")
+    def test_atomic_write_parent_swap_and_restore_leaves_no_external_temp(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent = root / "bound"
+            external = root / "external"
+            parent.mkdir()
+            external.mkdir()
+            original = root / "bound-original"
+            destination = parent / "summary.md"
+            identity = report_module._directory_identity(parent)
+            real_assert = report_module._assert_directory_identity
+            checks = 0
+            linked = False
+            content = "REPORT-CONTENT-MUST-NOT-LEAK"
+
+            def remove_link() -> None:
+                nonlocal linked
+                if not linked:
+                    return
+                if parent.is_symlink():
+                    parent.unlink()
+                else:
+                    os.rmdir(parent)
+                linked = False
+
+            def swap_then_restore(
+                path: Path,
+                expected: tuple[object, ...],
+            ) -> None:
+                nonlocal checks, linked
+                if Path(path) != parent:
+                    real_assert(path, expected)
+                    return
+                checks += 1
+                if checks == 1:
+                    real_assert(path, expected)
+                    parent.rename(original)
+                    if not self.make_directory_link(parent, external):
+                        original.rename(parent)
+                        self.skipTest("directory links and junctions are unavailable")
+                    linked = True
+                    return
+                if checks == 2:
+                    remove_link()
+                    original.rename(parent)
+                real_assert(path, expected)
+
+            try:
+                with mock.patch.object(
+                    report_module,
+                    "_assert_directory_identity",
+                    side_effect=swap_then_restore,
+                ):
+                    try:
+                        report_module._atomic_write_text(
+                            destination,
+                            content,
+                            identity,
+                        )
+                    except (OSError, ValueError):
+                        pass
+            finally:
+                remove_link()
+                if original.exists() and not parent.exists():
+                    original.rename(parent)
+
+            external_files = [path for path in external.rglob("*") if path.is_file()]
+            self.assertEqual(external_files, [])
+            self.assertNotIn(
+                content,
+                "\n".join(
+                    path.read_text(encoding="utf-8", errors="ignore")
+                    for path in external.rglob("*")
+                    if path.is_file()
+                ),
+            )
+
+    @unittest.skipUnless(os.name == "nt", "Windows handle-bound rename test")
+    def test_atomic_write_windows_rename_failure_preserves_old_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            destination = parent / "summary.md"
+            destination.write_text("old", encoding="utf-8")
+            identity = report_module._directory_identity(parent)
+
+            with (
+                mock.patch.object(
+                    report_module,
+                    "_windows_rename_report_handle",
+                    side_effect=OSError("rename failed"),
+                    create=True,
+                ),
+                self.assertRaisesRegex(OSError, "rename failed"),
+            ):
+                report_module._atomic_write_text(destination, "new", identity)
+
+            self.assertEqual(destination.read_text(encoding="utf-8"), "old")
+            self.assertEqual(list(parent.glob("*.tmp")), [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows handle ownership test")
+    def test_write_report_closes_every_owned_windows_handle(self) -> None:
+        open_directory = getattr(report_module, "_windows_open_report_directory", None)
+        create_temporary = getattr(report_module, "_windows_create_report_temp", None)
+        close_handle = getattr(report_module, "_windows_close_report_handle", None)
+        self.assertIsNotNone(open_directory)
+        self.assertIsNotNone(create_temporary)
+        self.assertIsNotNone(close_handle)
+        if open_directory is None or create_temporary is None or close_handle is None:
+            return
+
+        opened: list[int] = []
+        closed: list[int] = []
+
+        def capture_directory(*args: object, **kwargs: object) -> int:
+            handle = open_directory(*args, **kwargs)
+            opened.append(handle)
+            return handle
+
+        def capture_temporary(*args: object, **kwargs: object) -> int:
+            handle = create_temporary(*args, **kwargs)
+            opened.append(handle)
+            return handle
+
+        def capture_close(handle: int) -> None:
+            closed.append(handle)
+            close_handle(handle)
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(
+                report_module,
+                "_windows_open_report_directory",
+                side_effect=capture_directory,
+            ),
+            mock.patch.object(
+                report_module,
+                "_windows_create_report_temp",
+                side_effect=capture_temporary,
+            ),
+            mock.patch.object(
+                report_module,
+                "_windows_close_report_handle",
+                side_effect=capture_close,
+            ),
+        ):
+            output = Path(directory) / "output"
+            write_report(self.failure_report(), output)
+
+        self.assertGreaterEqual(len(opened), 8)
+        self.assertCountEqual(opened, closed)
+
     def test_write_report_rerun_cleans_only_direct_regular_failure_json(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"

@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
+import ctypes
+from ctypes import wintypes
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
-import tempfile
 from typing import Any
 
 from app.food_terms import expand_terms
@@ -18,9 +20,10 @@ from tests.evaluation.issue_registry import (
     _directory_identity,
     _durable_unlink,
     _file_identity,
-    _fsync_directory,
     _is_link_or_reparse_point,
-    _unlink_if_identity,
+    _windows_close_handle as _registry_windows_close_handle,
+    _windows_handle_identity as _registry_windows_handle_identity,
+    _windows_mark_handle_for_deletion as _registry_windows_mark_handle_for_deletion,
 )
 from tests.evaluation.schemas import EvaluationReport, Scenario
 
@@ -29,6 +32,41 @@ _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]")
 _STRUCTURE_INTENTS = frozenset(
     {"structure_ratio", "relative_revision", "cooking_diversity"}
 )
+_WINDOWS_DELETE = 0x00010000
+_WINDOWS_GENERIC_WRITE = 0x40000000
+_WINDOWS_FILE_READ_ATTRIBUTES = 0x00000080
+_WINDOWS_FILE_SHARE_READ = 0x00000001
+_WINDOWS_FILE_SHARE_WRITE = 0x00000002
+_WINDOWS_FILE_SHARE_DELETE = 0x00000004
+_WINDOWS_CREATE_NEW = 1
+_WINDOWS_OPEN_EXISTING = 3
+_WINDOWS_FILE_ATTRIBUTE_NORMAL = 0x00000080
+_WINDOWS_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
+_WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+_WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_WINDOWS_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_WINDOWS_FILE_RENAME_INFO_CLASS = 3
+_WINDOWS_FILE_RENAME_INFORMATION_CLASS = 10
+_WINDOWS_ERROR_FILE_EXISTS = 80
+_WINDOWS_ERROR_INVALID_PARAMETER = 87
+
+
+class _WindowsFileRenameInformation(ctypes.Structure):
+    _fields_ = (
+        ("ReplaceIfExists", wintypes.BOOLEAN),
+        ("RootDirectory", wintypes.HANDLE),
+        ("FileNameLength", wintypes.DWORD),
+        ("FileName", wintypes.WCHAR * 1),
+    )
+
+
+class _WindowsIoStatusBlock(ctypes.Structure):
+    _fields_ = (
+        ("Status", ctypes.c_ssize_t),
+        ("Information", ctypes.c_size_t),
+    )
+
+
 def _string_set(value: object) -> set[str]:
     if type(value) is not list:
         return set()
@@ -215,71 +253,437 @@ def _json_text(value: object) -> str:
     ) + "\n"
 
 
-def _atomic_write_text(
+def _write_descriptor(descriptor: int, content: bytes) -> None:
+    offset = 0
+    while offset < len(content):
+        written = os.write(descriptor, content[offset:])
+        if written <= 0:
+            raise OSError("report write made no progress")
+        offset += written
+
+
+def _validate_posix_parent_descriptor(
+    descriptor: int,
+    expected: tuple[int, int, Path],
+) -> None:
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or (metadata.st_dev, metadata.st_ino) != expected[:2]
+    ):
+        raise ValueError("report directory changed during file operation")
+
+
+def _posix_destination_is_link(parent_descriptor: int, name: str) -> bool:
+    try:
+        metadata = os.stat(
+            name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return False
+    return stat.S_ISLNK(metadata.st_mode)
+
+
+def _cleanup_posix_temp(
+    parent_descriptor: int,
+    name: str,
+    identity: tuple[int, int] | None,
+) -> None:
+    if identity is None:
+        return
+    try:
+        metadata = os.stat(
+            name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return
+    if (
+        stat.S_ISREG(metadata.st_mode)
+        and (metadata.st_dev, metadata.st_ino) == identity
+    ):
+        os.unlink(name, dir_fd=parent_descriptor)
+
+
+def _atomic_write_text_posix(
     path: Path,
-    content: str,
+    content: bytes,
     parent_identity: tuple[int, int, Path],
 ) -> None:
     _assert_directory_identity(path.parent, parent_identity)
     if _is_link_or_reparse_point(path):
         raise ValueError("report destination must not be a link or reparse point")
+    parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    parent_flags |= getattr(os, "O_NOFOLLOW", 0)
+    parent_descriptor = os.open(path.parent, parent_flags)
+    temporary_descriptor: int | None = None
+    temporary_name: str | None = None
+    temporary_identity: tuple[int, int] | None = None
+    renamed = False
+    try:
+        _validate_posix_parent_descriptor(parent_descriptor, parent_identity)
+        if _posix_destination_is_link(parent_descriptor, path.name):
+            raise ValueError("report destination must not be a link or reparse point")
+        for _ in range(100):
+            candidate = f".{path.name}.{secrets.token_hex(8)}.tmp"
+            flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+            flags |= getattr(os, "O_BINARY", 0)
+            try:
+                temporary_descriptor = os.open(
+                    candidate,
+                    flags,
+                    0o600,
+                    dir_fd=parent_descriptor,
+                )
+            except FileExistsError:
+                continue
+            temporary_name = candidate
+            break
+        if temporary_descriptor is None or temporary_name is None:
+            raise FileExistsError("could not allocate report temporary file")
+        metadata = os.fstat(temporary_descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("report temporary path must be a regular file")
+        temporary_identity = (metadata.st_dev, metadata.st_ino)
+        _validate_posix_parent_descriptor(parent_descriptor, parent_identity)
+        _write_descriptor(temporary_descriptor, content)
+        os.fsync(temporary_descriptor)
+        os.close(temporary_descriptor)
+        temporary_descriptor = None
+        _validate_posix_parent_descriptor(parent_descriptor, parent_identity)
+        if _posix_destination_is_link(parent_descriptor, path.name):
+            raise ValueError("report destination must not be a link or reparse point")
+        os.replace(
+            temporary_name,
+            path.name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+        )
+        renamed = True
+        os.fsync(parent_descriptor)
+        _validate_posix_parent_descriptor(parent_descriptor, parent_identity)
+    finally:
+        if temporary_descriptor is not None:
+            os.close(temporary_descriptor)
+        if not renamed and temporary_name is not None:
+            _cleanup_posix_temp(
+                parent_descriptor,
+                temporary_name,
+                temporary_identity,
+            )
+        os.close(parent_descriptor)
+
+
+def _windows_create_file(
+    path: Path,
+    desired_access: int,
+    creation_disposition: int,
+    flags: int,
+) -> int:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        str(path),
+        desired_access,
+        _WINDOWS_FILE_SHARE_READ
+        | _WINDOWS_FILE_SHARE_WRITE
+        | _WINDOWS_FILE_SHARE_DELETE,
+        None,
+        creation_disposition,
+        flags,
+        None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return int(handle)
+
+
+def _windows_close_report_handle(handle: int) -> None:
+    _registry_windows_close_handle(handle)
+
+
+def _windows_parent_handle_identity(handle: int) -> tuple[int, int]:
+    identity, attributes = _registry_windows_handle_identity(handle)
+    if attributes & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
+        raise ValueError("report directory handle must not be a reparse point")
+    if not attributes & _WINDOWS_FILE_ATTRIBUTE_DIRECTORY:
+        raise ValueError("report directory handle must reference a directory")
+    return identity
+
+
+def _windows_regular_handle_identity(handle: int) -> tuple[int, int]:
+    identity, attributes = _registry_windows_handle_identity(handle)
+    if attributes & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
+        raise ValueError("report temporary handle must not be a reparse point")
+    if attributes & _WINDOWS_FILE_ATTRIBUTE_DIRECTORY:
+        raise ValueError("report temporary handle must reference a regular file")
+    return identity
+
+
+def _windows_open_report_directory(
+    path: Path,
+    expected_identity: tuple[int, int, Path],
+) -> int:
+    handle = _windows_create_file(
+        path,
+        _WINDOWS_FILE_READ_ATTRIBUTES,
+        _WINDOWS_OPEN_EXISTING,
+        _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT
+        | _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS,
+    )
+    try:
+        if _windows_parent_handle_identity(handle) != expected_identity[:2]:
+            raise ValueError("report directory handle identity changed")
+        return handle
+    except BaseException:
+        _windows_close_report_handle(handle)
+        raise
+
+
+def _windows_create_report_temp(path: Path) -> int:
+    return _windows_create_file(
+        path,
+        _WINDOWS_GENERIC_WRITE
+        | _WINDOWS_FILE_READ_ATTRIBUTES
+        | _WINDOWS_DELETE,
+        _WINDOWS_CREATE_NEW,
+        _WINDOWS_FILE_ATTRIBUTE_NORMAL,
+    )
+
+
+def _windows_write_report_handle(handle: int, content: bytes) -> None:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    write_file = kernel32.WriteFile
+    write_file.argtypes = (
+        wintypes.HANDLE,
+        wintypes.LPCVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    )
+    write_file.restype = wintypes.BOOL
+    offset = 0
+    while offset < len(content):
+        written = wintypes.DWORD()
+        chunk = content[offset : offset + 65536]
+        if not write_file(
+            handle,
+            chunk,
+            len(chunk),
+            ctypes.byref(written),
+            None,
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if written.value == 0:
+            raise OSError("report write made no progress")
+        offset += written.value
+
+
+def _windows_flush_report_handle(handle: int) -> None:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    flush = kernel32.FlushFileBuffers
+    flush.argtypes = (wintypes.HANDLE,)
+    flush.restype = wintypes.BOOL
+    if not flush(handle):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _windows_rename_information(
+    parent_handle: int,
+    destination_name: str,
+) -> tuple[ctypes.Array[ctypes.c_char], int]:
+    encoded_name = destination_name.encode("utf-16-le")
+    size = _WindowsFileRenameInformation.FileName.offset + len(encoded_name)
+    buffer = ctypes.create_string_buffer(size)
+    information = ctypes.cast(
+        buffer,
+        ctypes.POINTER(_WindowsFileRenameInformation),
+    ).contents
+    information.ReplaceIfExists = True
+    information.RootDirectory = parent_handle
+    information.FileNameLength = len(encoded_name)
+    ctypes.memmove(
+        ctypes.addressof(buffer) + _WindowsFileRenameInformation.FileName.offset,
+        encoded_name,
+        len(encoded_name),
+    )
+    return buffer, size
+
+
+def _windows_nt_rename_report_handle(
+    handle: int,
+    information: ctypes.Array[ctypes.c_char],
+    size: int,
+) -> None:
+    ntdll = ctypes.WinDLL("ntdll")
+    rename = ntdll.NtSetInformationFile
+    rename.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(_WindowsIoStatusBlock),
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.INT,
+    )
+    rename.restype = ctypes.c_long
+    status_block = _WindowsIoStatusBlock()
+    status = rename(
+        handle,
+        ctypes.byref(status_block),
+        information,
+        size,
+        _WINDOWS_FILE_RENAME_INFORMATION_CLASS,
+    )
+    if status < 0:
+        rtl_status_to_error = ntdll.RtlNtStatusToDosError
+        rtl_status_to_error.argtypes = (ctypes.c_long,)
+        rtl_status_to_error.restype = wintypes.ULONG
+        raise ctypes.WinError(rtl_status_to_error(status))
+
+
+def _windows_rename_report_handle(
+    handle: int,
+    parent_handle: int,
+    destination_name: str,
+) -> None:
+    information, size = _windows_rename_information(
+        parent_handle,
+        destination_name,
+    )
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    rename = kernel32.SetFileInformationByHandle
+    rename.argtypes = (
+        wintypes.HANDLE,
+        wintypes.INT,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    )
+    rename.restype = wintypes.BOOL
+    if rename(
+        handle,
+        _WINDOWS_FILE_RENAME_INFO_CLASS,
+        information,
+        size,
+    ):
+        return
+    error = ctypes.get_last_error()
+    if error != _WINDOWS_ERROR_INVALID_PARAMETER:
+        raise ctypes.WinError(error)
+    _windows_nt_rename_report_handle(handle, information, size)
+
+
+def _windows_delete_report_handle(handle: int) -> None:
+    _registry_windows_mark_handle_for_deletion(handle)
+
+
+def _atomic_write_text_windows(
+    path: Path,
+    content: bytes,
+    parent_identity: tuple[int, int, Path],
+) -> None:
+    _assert_directory_identity(path.parent, parent_identity)
+    if _is_link_or_reparse_point(path):
+        raise ValueError("report destination must not be a link or reparse point")
+    parent_handle: int | None = None
+    temporary_handle: int | None = None
     temporary_path: Path | None = None
     temporary_identity: tuple[int, int] | None = None
+    renamed = False
+    primary_error: BaseException | None = None
     try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temporary:
-            temporary_path = Path(temporary.name)
-            metadata = os.fstat(temporary.fileno())
-            if not stat.S_ISREG(metadata.st_mode):
-                raise ValueError("report temporary path must be a regular file")
-            temporary_identity = (metadata.st_dev, metadata.st_ino)
-            if _is_link_or_reparse_point(temporary_path):
-                raise ValueError("report temporary path must not be a link or reparse point")
-            temporary.write(content)
-            temporary.flush()
-            os.fsync(temporary.fileno())
-
+        parent_handle = _windows_open_report_directory(
+            path.parent,
+            parent_identity,
+        )
         _assert_directory_identity(path.parent, parent_identity)
-        temporary_metadata = temporary_path.lstat()
-        if (
-            _is_link_or_reparse_point(temporary_path)
-            or not stat.S_ISREG(temporary_metadata.st_mode)
-            or (temporary_metadata.st_dev, temporary_metadata.st_ino)
-            != temporary_identity
-        ):
-            raise ValueError("report temporary path changed before replace")
+        if _windows_parent_handle_identity(parent_handle) != parent_identity[:2]:
+            raise ValueError("report directory handle identity changed")
+        for _ in range(100):
+            temporary_path = path.parent / (
+                f".{path.name}.{secrets.token_hex(8)}.tmp"
+            )
+            try:
+                temporary_handle = _windows_create_report_temp(temporary_path)
+            except OSError as error:
+                if getattr(error, "winerror", None) == _WINDOWS_ERROR_FILE_EXISTS:
+                    continue
+                raise
+            break
+        if temporary_handle is None or temporary_path is None:
+            raise FileExistsError("could not allocate report temporary file")
+        temporary_identity = _windows_regular_handle_identity(temporary_handle)
+        _assert_directory_identity(path.parent, parent_identity)
+        if _windows_parent_handle_identity(parent_handle) != parent_identity[:2]:
+            raise ValueError("report directory handle identity changed")
+        if _file_identity(temporary_path) != temporary_identity:
+            raise ValueError("report temporary entry identity changed")
+        _windows_write_report_handle(temporary_handle, content)
+        _windows_flush_report_handle(temporary_handle)
+        if _windows_regular_handle_identity(temporary_handle) != temporary_identity:
+            raise ValueError("report temporary handle identity changed")
+        _assert_directory_identity(path.parent, parent_identity)
+        if _windows_parent_handle_identity(parent_handle) != parent_identity[:2]:
+            raise ValueError("report directory handle identity changed")
         if _is_link_or_reparse_point(path):
             raise ValueError("report destination must not be a link or reparse point")
-        _assert_directory_identity(path.parent, parent_identity)
-        os.replace(temporary_path, path)
-        try:
-            _assert_directory_identity(path.parent, parent_identity)
-            destination_metadata = path.lstat()
-            if (
-                _is_link_or_reparse_point(path)
-                or not stat.S_ISREG(destination_metadata.st_mode)
-                or (destination_metadata.st_dev, destination_metadata.st_ino)
-                != temporary_identity
-            ):
-                raise ValueError("report destination changed during replace")
-            _fsync_directory(path.parent)
-            _assert_directory_identity(path.parent, parent_identity)
-        except ValueError:
-            _unlink_if_identity(path, temporary_identity)
-            raise
+        _windows_rename_report_handle(
+            temporary_handle,
+            parent_handle,
+            path.name,
+        )
+        renamed = True
+        if _windows_regular_handle_identity(temporary_handle) != temporary_identity:
+            raise ValueError("report destination handle identity changed")
+        if _windows_parent_handle_identity(parent_handle) != parent_identity[:2]:
+            raise ValueError("report directory handle identity changed")
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        if temporary_path is not None and temporary_path.exists():
-            if temporary_identity is None:
-                if not _is_link_or_reparse_point(temporary_path):
-                    _durable_unlink(temporary_path)
-            else:
-                _unlink_if_identity(temporary_path, temporary_identity)
+        cleanup_error: BaseException | None = None
+        if temporary_handle is not None and not renamed:
+            try:
+                _windows_delete_report_handle(temporary_handle)
+            except BaseException as error:
+                cleanup_error = error
+        if temporary_handle is not None:
+            try:
+                _windows_close_report_handle(temporary_handle)
+            except BaseException as error:
+                if cleanup_error is None:
+                    cleanup_error = error
+        if parent_handle is not None:
+            try:
+                _windows_close_report_handle(parent_handle)
+            except BaseException as error:
+                if cleanup_error is None:
+                    cleanup_error = error
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
+
+
+def _atomic_write_text(
+    path: Path,
+    content: str,
+    parent_identity: tuple[int, int, Path],
+) -> None:
+    encoded = content.encode("utf-8")
+    if os.name == "nt":
+        _atomic_write_text_windows(path, encoded, parent_identity)
+    else:
+        _atomic_write_text_posix(path, encoded, parent_identity)
 
 
 def _write_json(
