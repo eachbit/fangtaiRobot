@@ -131,8 +131,8 @@ class ImportEvaluationFailuresCliTests(unittest.TestCase):
         self.assertEqual(registry.load(issue_id)["occurrences"], 1)
 
     def test_directory_imports_direct_json_and_recursive_is_explicit(self) -> None:
-        direct = self.evaluation_root / "direct"
-        direct.mkdir()
+        direct = self.evaluation_root / "manual" / "failures"
+        direct.mkdir(parents=True)
         generated = self.write_failures(
             self.evaluation_root / "generated",
             "scenario-a",
@@ -154,6 +154,62 @@ class ImportEvaluationFailuresCliTests(unittest.TestCase):
         self.assertEqual(len(direct_output.splitlines()), 2)
         self.assertEqual(len(recursive_output.splitlines()), 3)
         self.assertTrue(nested_path.is_file())
+
+    def test_recursive_cycle_imports_only_round_failure_json(self) -> None:
+        cycle = self.evaluation_root / "cycles" / "daily-one"
+        cycle.mkdir(parents=True)
+        (cycle / "cycle.json").write_text('{"status":"completed"}', encoding="utf-8")
+        (cycle / "summary.json").write_text('{"completed_rounds":1}', encoding="utf-8")
+        failure_path = self.write_failures(
+            cycle / "rounds" / "0001-40",
+            "scenario-cycle",
+        )[0]
+        registry = IssueRegistry(self.evaluation_root)
+
+        code, output, error = self.invoke(
+            ["--recursive", str(cycle)],
+            registry=registry,
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(error, "")
+        self.assertEqual(len(output.splitlines()), 1)
+        self.assertTrue(failure_path.is_file())
+
+    def test_recursive_cycle_imports_multiple_rounds_once_in_stable_order(self) -> None:
+        cycle = self.evaluation_root / "cycles" / "daily-multiple"
+        cycle.mkdir(parents=True)
+        (cycle / "cycle.json").write_text('{"status":"completed"}', encoding="utf-8")
+        (cycle / "summary.json").write_text('{"completed_rounds":2}', encoding="utf-8")
+        self.write_failures(cycle / "rounds" / "0001-40", "scenario-b")
+        self.write_failures(cycle / "rounds" / "0002-41", "scenario-a")
+        registry = IssueRegistry(self.evaluation_root)
+
+        code, output, error = self.invoke(
+            ["--recursive", str(cycle), str(cycle / "rounds")],
+            registry=registry,
+        )
+        issue_ids = output.splitlines()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(error, "")
+        self.assertEqual(len(issue_ids), 2)
+        self.assertEqual(issue_ids, sorted(issue_ids))
+        self.assertTrue(all(registry.load(issue_id)["occurrences"] == 1 for issue_id in issue_ids))
+
+    def test_recursive_directory_without_failure_json_returns_two(self) -> None:
+        cycle = self.evaluation_root / "cycles" / "empty-cycle"
+        round_directory = cycle / "rounds" / "0001-40"
+        round_directory.mkdir(parents=True)
+        (cycle / "cycle.json").write_text('{"status":"completed"}', encoding="utf-8")
+        (cycle / "summary.json").write_text('{"completed_rounds":1}', encoding="utf-8")
+        (round_directory / "summary.json").write_text('{"total":2000}', encoding="utf-8")
+
+        code, output, error = self.invoke(["--recursive", str(cycle)])
+
+        self.assertEqual(code, 2)
+        self.assertEqual(output, "")
+        self.assertIn("no failure JSON", error)
 
     def test_rejects_external_missing_and_linked_paths_with_exit_two(self) -> None:
         outside = self.repository_root.parent / "outside"

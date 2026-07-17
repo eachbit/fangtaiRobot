@@ -79,25 +79,19 @@ def _scan_directory(
     directory: Path,
     *,
     recursive: bool,
-    include_direct_json: bool = True,
 ) -> list[Path]:
     _directory_identity(directory)
     files: list[Path] = []
+    collect_direct_json = directory.name == "failures"
     for child in sorted(directory.iterdir(), key=lambda item: item.name):
         if _is_link_or_reparse_point(child):
             raise ValueError("directory input must not contain links or reparse points")
         metadata = child.lstat()
         if stat.S_ISREG(metadata.st_mode):
-            if child.suffix.lower() == ".json" and include_direct_json:
+            if child.suffix.lower() == ".json" and collect_direct_json:
                 files.append(child)
         elif stat.S_ISDIR(metadata.st_mode) and recursive:
-            files.extend(
-                _scan_directory(
-                    child,
-                    recursive=True,
-                    include_direct_json=child.name == "failures",
-                )
-            )
+            files.extend(_scan_directory(child, recursive=True))
     return files
 
 
@@ -153,6 +147,8 @@ def main(
             evaluation_root,
             recursive=args.recursive,
         )
+        if not files:
+            raise ValueError("no failure JSON files found")
         observed_at = _utc_now()
         touched: set[str] = set()
         for path in files:
