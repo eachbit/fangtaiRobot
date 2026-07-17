@@ -152,8 +152,46 @@ class ImportEvaluationFailuresCliTests(unittest.TestCase):
 
         self.assertEqual((direct_code, recursive_code), (0, 0))
         self.assertEqual(len(direct_output.splitlines()), 2)
-        self.assertEqual(len(recursive_output.splitlines()), 3)
+        self.assertEqual(len(recursive_output.splitlines()), 2)
         self.assertTrue(nested_path.is_file())
+
+    def test_recursive_parent_imports_only_exact_round_failure_structure(self) -> None:
+        parent = self.evaluation_root / "batch"
+        first_cycle = parent / "cycles" / "daily-one"
+        second_cycle = parent / "archive" / "daily-two"
+        self.write_failures(
+            first_cycle / "rounds" / "0001-40",
+            "valid-first",
+        )
+        self.write_failures(
+            second_cycle / "rounds" / "0002-41",
+            "valid-second",
+        )
+        self.write_failures(parent / "unrelated", "invalid-unrelated")
+        self.write_failures(
+            first_cycle / "rounds" / "0001-40" / "nested",
+            "invalid-round-nested",
+        )
+        self.write_failures(
+            first_cycle / "rounds" / "0001-40" / "failures" / "child",
+            "invalid-failure-child",
+        )
+        registry = IssueRegistry(self.evaluation_root)
+
+        code, output, error = self.invoke(
+            ["--recursive", str(parent)],
+            registry=registry,
+        )
+        issue_ids = output.splitlines()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(error, "")
+        self.assertEqual(len(issue_ids), 2)
+        self.assertEqual(issue_ids, sorted(issue_ids))
+        self.assertEqual(
+            len(list(registry.status_directories["open"].glob("*.json"))),
+            2,
+        )
 
     def test_recursive_cycle_imports_only_round_failure_json(self) -> None:
         cycle = self.evaluation_root / "cycles" / "daily-one"

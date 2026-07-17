@@ -79,10 +79,13 @@ def _scan_directory(
     directory: Path,
     *,
     recursive: bool,
+    direct_failure_root: bool = False,
 ) -> list[Path]:
     _directory_identity(directory)
     files: list[Path] = []
-    collect_direct_json = directory.name == "failures"
+    collect_direct_json = direct_failure_root or (
+        directory.name == "failures" and directory.parent.parent.name == "rounds"
+    )
     for child in sorted(directory.iterdir(), key=lambda item: item.name):
         if _is_link_or_reparse_point(child):
             raise ValueError("directory input must not contain links or reparse points")
@@ -90,7 +93,7 @@ def _scan_directory(
         if stat.S_ISREG(metadata.st_mode):
             if child.suffix.lower() == ".json" and collect_direct_json:
                 files.append(child)
-        elif stat.S_ISDIR(metadata.st_mode) and recursive:
+        elif stat.S_ISDIR(metadata.st_mode) and recursive and not collect_direct_json:
             files.extend(_scan_directory(child, recursive=True))
     return files
 
@@ -111,7 +114,14 @@ def _collect_files(
                 raise ValueError("failure file inputs must use the .json extension")
             files.add(path)
         elif stat.S_ISDIR(metadata.st_mode):
-            files.update(_scan_directory(path, recursive=recursive))
+            direct_failure_root = path.name == "failures"
+            files.update(
+                _scan_directory(
+                    path,
+                    recursive=recursive and not direct_failure_root,
+                    direct_failure_root=direct_failure_root,
+                )
+            )
         else:
             raise ValueError("input path must be a regular file or directory")
     return tuple(sorted(files, key=lambda item: item.as_posix()))
