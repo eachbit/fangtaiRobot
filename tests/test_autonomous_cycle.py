@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import io
 import json
 import math
@@ -855,6 +856,139 @@ class AutonomousCycleTests(unittest.TestCase):
         self.assertTrue(lock_path.is_file())
         with autonomous_cycle._cycle_lock(cycle_dir):
             self.assertTrue(lock_path.is_file())
+
+    def test_cycle_lock_release_error_is_ignored_after_descriptor_close(self) -> None:
+        cycle_dir = self.cycle_dir("release-error")
+        cycle_dir.mkdir(parents=True)
+        opened: list[int] = []
+        real_open = autonomous_cycle._open_lock_descriptor
+        real_close = os.close
+
+        def capture_open(path: Path) -> int:
+            descriptor = real_open(path)
+            opened.append(descriptor)
+            return descriptor
+
+        try:
+            with (
+                mock.patch.object(
+                    autonomous_cycle,
+                    "_open_lock_descriptor",
+                    side_effect=capture_open,
+                ),
+                mock.patch.object(
+                    autonomous_cycle,
+                    "_release_lock",
+                    side_effect=OSError(errno.EIO, "simulated release failure"),
+                ),
+            ):
+                with autonomous_cycle._cycle_lock(cycle_dir):
+                    pass
+        finally:
+            for descriptor in opened:
+                try:
+                    real_close(descriptor)
+                except OSError:
+                    pass
+
+        with self.assertRaises(OSError):
+            os.fstat(opened[-1])
+
+    def test_cycle_lock_close_error_wins_over_release_error(self) -> None:
+        cycle_dir = self.cycle_dir("close-error")
+        cycle_dir.mkdir(parents=True)
+        opened: list[int] = []
+        real_open = autonomous_cycle._open_lock_descriptor
+        real_close = os.close
+
+        def capture_open(path: Path) -> int:
+            descriptor = real_open(path)
+            opened.append(descriptor)
+            return descriptor
+
+        def close_then_fail(descriptor: int) -> None:
+            real_close(descriptor)
+            raise OSError(errno.EIO, "simulated close failure")
+
+        try:
+            with (
+                mock.patch.object(
+                    autonomous_cycle,
+                    "_open_lock_descriptor",
+                    side_effect=capture_open,
+                ),
+                mock.patch.object(
+                    autonomous_cycle,
+                    "_release_lock",
+                    side_effect=OSError(errno.EIO, "simulated release failure"),
+                ),
+                mock.patch.object(
+                    autonomous_cycle.os,
+                    "close",
+                    side_effect=close_then_fail,
+                ),
+                self.assertRaisesRegex(OSError, "close failure"),
+            ):
+                with autonomous_cycle._cycle_lock(cycle_dir):
+                    pass
+        finally:
+            for descriptor in opened:
+                try:
+                    real_close(descriptor)
+                except OSError:
+                    pass
+
+        with self.assertRaises(OSError):
+            os.fstat(opened[-1])
+
+    def test_cycle_lock_business_error_wins_and_descriptor_closes(self) -> None:
+        cycle_dir = self.cycle_dir("business-error")
+        cycle_dir.mkdir(parents=True)
+        opened: list[int] = []
+        real_open = autonomous_cycle._open_lock_descriptor
+        real_close = os.close
+        business_error = RuntimeError("business failure")
+
+        def capture_open(path: Path) -> int:
+            descriptor = real_open(path)
+            opened.append(descriptor)
+            return descriptor
+
+        def close_then_fail(descriptor: int) -> None:
+            real_close(descriptor)
+            raise OSError(errno.EIO, "simulated close failure")
+
+        try:
+            with (
+                mock.patch.object(
+                    autonomous_cycle,
+                    "_open_lock_descriptor",
+                    side_effect=capture_open,
+                ),
+                mock.patch.object(
+                    autonomous_cycle,
+                    "_release_lock",
+                    side_effect=OSError(errno.EIO, "simulated release failure"),
+                ),
+                mock.patch.object(
+                    autonomous_cycle.os,
+                    "close",
+                    side_effect=close_then_fail,
+                ),
+                self.assertRaises(RuntimeError) as raised,
+            ):
+                with autonomous_cycle._cycle_lock(cycle_dir):
+                    raise business_error
+        finally:
+            for descriptor in opened:
+                try:
+                    real_close(descriptor)
+                except OSError:
+                    pass
+
+        self.assertIs(raised.exception, business_error)
+        with self.assertRaises(OSError):
+            os.fstat(opened[-1])
 
     def test_atomic_replace_failure_preserves_old_cycle_file(self) -> None:
         self.cycle_dir().mkdir(parents=True)

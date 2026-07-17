@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from scripts import import_evaluation_failures as cli
 from tests.evaluation.issue_registry import IssueRegistry
@@ -129,6 +130,45 @@ class ImportEvaluationFailuresCliTests(unittest.TestCase):
         issue_id = first_output.strip()
         self.assertRegex(issue_id, r"^issue-[0-9a-f]{24}$")
         self.assertEqual(registry.load(issue_id)["occurrences"], 1)
+
+    def test_file_replaced_after_cli_selection_imports_new_snapshot_once(self) -> None:
+        path = self.write_failures(self.evaluation_root / "run-a", "scenario-a")[0]
+        replacement = self.write_failures(
+            self.evaluation_root / "run-b",
+            "scenario-b",
+        )[0]
+        replacement_bytes = replacement.read_bytes()
+        registry = IssueRegistry(self.evaluation_root)
+        real_ingest = registry.ingest_failure_file
+        replaced = False
+
+        def replace_before_ingest(*args: object, **kwargs: object) -> tuple[str, ...]:
+            nonlocal replaced
+            if not replaced:
+                path.write_bytes(replacement_bytes)
+                replaced = True
+            return real_ingest(*args, **kwargs)
+
+        with mock.patch.object(
+            registry,
+            "ingest_failure_file",
+            side_effect=replace_before_ingest,
+        ):
+            first_code, first_output, first_error = self.invoke(
+                [str(path)],
+                registry=registry,
+            )
+        second_code, second_output, second_error = self.invoke(
+            [str(path)],
+            registry=registry,
+        )
+
+        issue_id = first_output.strip()
+        self.assertEqual((first_code, second_code), (0, 0))
+        self.assertEqual(first_error + second_error, "")
+        self.assertEqual(first_output, second_output)
+        self.assertEqual(registry.load(issue_id)["occurrences"], 1)
+        self.assertEqual(len(list(registry.observations_root.glob("*.json"))), 1)
 
     def test_directory_imports_direct_json_and_recursive_is_explicit(self) -> None:
         direct = self.evaluation_root / "manual" / "failures"

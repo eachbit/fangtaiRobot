@@ -1822,9 +1822,40 @@ class IssueRegistry:
         if not stat.S_ISREG(metadata.st_mode):
             raise ValueError("failure file path must be a regular file")
         parent_identity = _directory_identity(failure_path.parent)
-        raw = _read_regular_file_bytes(failure_path, parent_identity)
+        _assert_directory_identity(failure_path.parent, parent_identity)
+        if _is_link_or_reparse_point(failure_path):
+            raise ValueError("failure file must not be a link or reparse point")
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(failure_path, flags)
         try:
-            payload = _strict_json_loads(raw.decode("utf-8"))
+            opened_metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(opened_metadata.st_mode):
+                raise ValueError("failure file path must be a regular file")
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(descriptor, 65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        finally:
+            os.close(descriptor)
+        _assert_directory_identity(failure_path.parent, parent_identity)
+        return self.ingest_failure_bytes(
+            b"".join(chunks),
+            observed_at=observed_at,
+            observation_id=observation_id,
+        )
+
+    def ingest_failure_bytes(
+        self,
+        data: bytes,
+        observed_at: str,
+        observation_id: str | None = None,
+    ) -> tuple[str, ...]:
+        if type(data) is not bytes:
+            raise ValueError("failure data must be bytes")
+        try:
+            payload = _strict_json_loads(data.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise ValueError("failure file is not valid strict JSON") from exc
         if type(payload) is not dict:
@@ -1871,11 +1902,16 @@ class IssueRegistry:
         )
         self._public_context(context, failure)
         report = EvaluationReport(1, 0, (failure,), {}, {}, {})
+        effective_observation_id = (
+            f"failure-file-bytes:{hashlib.sha256(data).hexdigest()}"
+            if observation_id is None
+            else observation_id
+        )
         return self.ingest(
             report,
             {failure.scenario_id: context},
             observed_at=observed_at,
-            observation_id=observation_id,
+            observation_id=effective_observation_id,
         )
 
     def load(self, issue_id: str) -> dict[str, Any]:

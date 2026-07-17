@@ -4,12 +4,15 @@ import json
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from unittest.mock import patch
 
 from app.data_loader import load_recipes
 from tests.evaluation.failure_minimizer import minimize_failure
+from tests.evaluation import report as report_module
 from tests.evaluation.report import (
     compute_reviewed_metrics,
     safe_scenario_filename,
@@ -110,6 +113,35 @@ class FailureMinimizerTests(unittest.TestCase):
 
 
 class EvaluationReportTests(unittest.TestCase):
+    @staticmethod
+    def make_directory_link(link: Path, target: Path) -> bool:
+        try:
+            link.symlink_to(target, target_is_directory=True)
+            return True
+        except OSError:
+            if os.name != "nt":
+                return False
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+    @staticmethod
+    def failure_report(message: str = "private-report-message") -> EvaluationReport:
+        failure = FailureRecord(
+            "report-security",
+            7,
+            "abc123",
+            (message,),
+            (message,),
+            (Violation("runner.failure", "blocking", message, None),),
+            1.0,
+        )
+        return EvaluationReport(1, 0, (failure,), {}, {}, {})
+
     @staticmethod
     def scenario(
         scenario_id: str,
@@ -405,6 +437,108 @@ class EvaluationReportTests(unittest.TestCase):
             self.assertEqual(failure_payload["scenario_hash"], "0123456789abcdef")
             self.assertEqual(failure_payload["violation_codes"], {"secret.failure": 1})
             self.assertNotIn("scenario_context", failure_payload)
+
+    def test_write_report_rejects_linked_failures_before_writing_or_deleting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "output"
+            outside = root / "outside"
+            output.mkdir()
+            outside.mkdir()
+            outside_json = outside / "outside.json"
+            outside_json.write_text('{"outside":true}', encoding="utf-8")
+            failures = output / "failures"
+            if not self.make_directory_link(failures, outside):
+                self.skipTest("directory links and junctions are unavailable")
+
+            with self.assertRaisesRegex(ValueError, "link|reparse"):
+                write_report(self.failure_report(), output)
+
+            self.assertEqual(outside_json.read_text(encoding="utf-8"), '{"outside":true}')
+            self.assertEqual(list(outside.glob("*.json")), [outside_json])
+            self.assertFalse((output / "summary.json").exists())
+
+    def test_write_report_detects_failures_directory_replacement_before_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "output"
+            failures = output / "failures"
+            outside = root / "outside"
+            failures.mkdir(parents=True)
+            outside.mkdir()
+            stale = failures / "stale.json"
+            stale.write_text('{"stale":true}', encoding="utf-8")
+            outside_json = outside / "outside.json"
+            outside_json.write_text('{"outside":true}', encoding="utf-8")
+            original = output / "failures-original"
+            checks = 0
+
+            def replace_on_second_check(path: Path, expected: tuple[object, ...]) -> None:
+                nonlocal checks
+                if Path(path) == failures:
+                    checks += 1
+                    if checks == 2:
+                        failures.rename(original)
+                        if not self.make_directory_link(failures, outside):
+                            original.rename(failures)
+                            self.skipTest("directory links and junctions are unavailable")
+                metadata = Path(path).lstat()
+                actual = (metadata.st_dev, metadata.st_ino, Path(path).resolve())
+                if actual != expected:
+                    raise ValueError("report directory changed")
+
+            with (
+                mock.patch.object(
+                    report_module,
+                    "_assert_directory_identity",
+                    side_effect=replace_on_second_check,
+                    create=True,
+                ),
+                self.assertRaisesRegex(ValueError, "changed"),
+            ):
+                write_report(self.failure_report(), output)
+
+            self.assertEqual(outside_json.read_text(encoding="utf-8"), '{"outside":true}')
+            self.assertEqual(list(outside.glob("*.json")), [outside_json])
+            self.assertEqual(
+                (original / "stale.json").read_text(encoding="utf-8"),
+                '{"stale":true}',
+            )
+
+    def test_write_report_rerun_cleans_only_direct_regular_failure_json(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            write_report(self.failure_report("first"), output)
+            failures = output / "failures"
+            stale = failures / "stale.json"
+            stale.write_text("{}", encoding="utf-8")
+            notes = failures / "notes.txt"
+            notes.write_text("keep", encoding="utf-8")
+            nested = failures / "nested" / "keep.json"
+            nested.parent.mkdir()
+            nested.write_text("{}", encoding="utf-8")
+            outside = output.parent / "outside.json"
+            outside.write_text('{"outside":true}', encoding="utf-8")
+            linked = failures / "linked.json"
+            try:
+                linked.symlink_to(outside)
+            except OSError:
+                linked = None
+
+            write_report(self.failure_report("second"), output)
+
+            direct_json = sorted(
+                path.name
+                for path in failures.glob("*.json")
+                if not path.is_symlink() and path.is_file()
+            )
+            self.assertEqual(len(direct_json), 1)
+            self.assertNotIn("stale.json", direct_json)
+            self.assertEqual(notes.read_text(encoding="utf-8"), "keep")
+            self.assertEqual(nested.read_text(encoding="utf-8"), "{}")
+            self.assertEqual(outside.read_text(encoding="utf-8"), '{"outside":true}')
+            if linked is not None:
+                self.assertTrue(linked.is_symlink())
 
     def test_public_failure_artifact_contains_sanitized_scenario_context(self) -> None:
         scenario = Scenario(

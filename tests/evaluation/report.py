@@ -4,11 +4,24 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import stat
+import tempfile
 from typing import Any
 
 from app.food_terms import expand_terms
+from tests.evaluation.issue_registry import (
+    _assert_directory_identity,
+    _assert_no_link_ancestors,
+    _directory_identity,
+    _durable_unlink,
+    _file_identity,
+    _fsync_directory,
+    _is_link_or_reparse_point,
+    _unlink_if_identity,
+)
 from tests.evaluation.schemas import EvaluationReport, Scenario
 
 
@@ -202,11 +215,125 @@ def _json_text(value: object) -> str:
     ) + "\n"
 
 
-def _write_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(_json_text(value), encoding="utf-8")
-    temporary.replace(path)
+def _atomic_write_text(
+    path: Path,
+    content: str,
+    parent_identity: tuple[int, int, Path],
+) -> None:
+    _assert_directory_identity(path.parent, parent_identity)
+    if _is_link_or_reparse_point(path):
+        raise ValueError("report destination must not be a link or reparse point")
+    temporary_path: Path | None = None
+    temporary_identity: tuple[int, int] | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            metadata = os.fstat(temporary.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("report temporary path must be a regular file")
+            temporary_identity = (metadata.st_dev, metadata.st_ino)
+            if _is_link_or_reparse_point(temporary_path):
+                raise ValueError("report temporary path must not be a link or reparse point")
+            temporary.write(content)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+
+        _assert_directory_identity(path.parent, parent_identity)
+        temporary_metadata = temporary_path.lstat()
+        if (
+            _is_link_or_reparse_point(temporary_path)
+            or not stat.S_ISREG(temporary_metadata.st_mode)
+            or (temporary_metadata.st_dev, temporary_metadata.st_ino)
+            != temporary_identity
+        ):
+            raise ValueError("report temporary path changed before replace")
+        if _is_link_or_reparse_point(path):
+            raise ValueError("report destination must not be a link or reparse point")
+        _assert_directory_identity(path.parent, parent_identity)
+        os.replace(temporary_path, path)
+        try:
+            _assert_directory_identity(path.parent, parent_identity)
+            destination_metadata = path.lstat()
+            if (
+                _is_link_or_reparse_point(path)
+                or not stat.S_ISREG(destination_metadata.st_mode)
+                or (destination_metadata.st_dev, destination_metadata.st_ino)
+                != temporary_identity
+            ):
+                raise ValueError("report destination changed during replace")
+            _fsync_directory(path.parent)
+            _assert_directory_identity(path.parent, parent_identity)
+        except ValueError:
+            _unlink_if_identity(path, temporary_identity)
+            raise
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            if temporary_identity is None:
+                if not _is_link_or_reparse_point(temporary_path):
+                    _durable_unlink(temporary_path)
+            else:
+                _unlink_if_identity(temporary_path, temporary_identity)
+
+
+def _write_json(
+    path: Path,
+    value: object,
+    parent_identity: tuple[int, int, Path],
+) -> None:
+    _atomic_write_text(path, _json_text(value), parent_identity)
+
+
+def _prepare_report_directories(
+    output: Path,
+) -> tuple[tuple[int, int, Path], Path, tuple[int, int, Path]]:
+    _assert_no_link_ancestors(output)
+    output.mkdir(parents=True, exist_ok=True)
+    _assert_no_link_ancestors(output)
+    output_identity = _directory_identity(output)
+
+    failures = output / "failures"
+    _assert_directory_identity(output, output_identity)
+    if _is_link_or_reparse_point(failures):
+        raise ValueError("report failures path must not be a link or reparse point")
+    failures.mkdir(exist_ok=True)
+    _assert_directory_identity(output, output_identity)
+    _assert_no_link_ancestors(failures)
+    failures_identity = _directory_identity(failures)
+    if failures_identity[2].parent != output_identity[2]:
+        raise ValueError("report failures path escapes output directory")
+    _assert_directory_identity(failures, failures_identity)
+    return output_identity, failures, failures_identity
+
+
+def _clean_failure_json(
+    failures: Path,
+    failures_identity: tuple[int, int, Path],
+) -> None:
+    _assert_directory_identity(failures, failures_identity)
+    for path in sorted(failures.iterdir(), key=lambda item: item.name):
+        _assert_directory_identity(failures, failures_identity)
+        if path.suffix != ".json":
+            continue
+        if _is_link_or_reparse_point(path):
+            continue
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode):
+            continue
+        identity = _file_identity(path)
+        _assert_directory_identity(failures, failures_identity)
+        _durable_unlink(
+            path,
+            expected_parent_identity=failures_identity,
+            expected_file_identity=identity,
+        )
+        _assert_directory_identity(failures, failures_identity)
 
 
 def safe_scenario_filename(scenario_id: str) -> str:
@@ -265,7 +392,10 @@ def write_report(
     scenario_context: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Path]:
     output = Path(output_dir)
-    output.mkdir(parents=True, exist_ok=True)
+    output_identity, failures_dir, failures_identity = _prepare_report_directories(
+        output
+    )
+    _clean_failure_json(failures_dir, failures_identity)
     metadata = dict(metadata or {})
     intermediates = intermediates or {}
     minimizations = minimizations or {}
@@ -299,8 +429,8 @@ def write_report(
     summary_path = output / "summary.json"
     markdown_path = output / "summary.md"
     coverage_path = output / "coverage.json"
-    _write_json(summary_path, _strip_session_ids(base))
-    _write_json(coverage_path, report.to_dict()["coverage"])
+    _write_json(summary_path, _strip_session_ids(base), output_identity)
+    _write_json(coverage_path, report.to_dict()["coverage"], output_identity)
 
     blocking = report.total - report.passed
     markdown = (
@@ -313,10 +443,8 @@ def write_report(
         f"| P50 (ms) | {report.timings.get('p50_ms', 0)} |\n"
         f"| P95 (ms) | {report.timings.get('p95_ms', 0)} |\n"
     )
-    markdown_path.write_text(markdown, encoding="utf-8")
+    _atomic_write_text(markdown_path, markdown, output_identity)
 
-    failures_dir = output / "failures"
-    failures_dir.mkdir(parents=True, exist_ok=True)
     for failure in report.failures:
         source = source_metadata.get(failure.scenario_id, {})
         if source.get("holdout") is True:
@@ -344,7 +472,11 @@ def write_report(
                         f"missing scenario context for {failure.scenario_id}"
                     )
                 payload["scenario_context"] = dict(context)
-        _write_json(failures_dir / filename, _strip_session_ids(payload))
+        _write_json(
+            failures_dir / filename,
+            _strip_session_ids(payload),
+            failures_identity,
+        )
 
     return {
         "summary_json": summary_path,

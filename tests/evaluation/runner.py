@@ -903,11 +903,6 @@ class EvaluationRunner:
             metrics=metrics,
             timings=summarize_timings(all_timings),
         )
-        failures_dir = self.output_dir / "failures"
-        failures_dir.mkdir(parents=True, exist_ok=True)
-        for path in failures_dir.glob("*.json"):
-            if path.is_file():
-                path.unlink()
         write_report(
             report,
             self.output_dir,

@@ -313,6 +313,7 @@ def _cycle_lock(cycle_dir: Path) -> Iterator[None]:
     _assert_no_link_ancestors(cycle_dir)
     descriptor = _open_lock_descriptor(cycle_dir / ".cycle.lock")
     acquired = False
+    primary_error: BaseException | None = None
     try:
         for attempt in range(_LOCK_RETRIES):
             try:
@@ -329,10 +330,25 @@ def _cycle_lock(cycle_dir: Path) -> Iterator[None]:
         if not acquired:
             raise TimeoutError("timed out waiting for cycle lock")
         yield
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
+        release_error: OSError | None = None
         if acquired:
-            _release_lock(descriptor)
-        os.close(descriptor)
+            try:
+                _release_lock(descriptor)
+            except OSError as error:
+                release_error = error
+        close_error: OSError | None = None
+        try:
+            os.close(descriptor)
+        except OSError as error:
+            close_error = error
+        if primary_error is None and close_error is not None:
+            if release_error is not None:
+                raise close_error from release_error
+            raise close_error
 
 
 def _utc_now() -> str:

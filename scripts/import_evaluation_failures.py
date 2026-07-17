@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 from datetime import datetime, timezone
-import hashlib
 import os
 from pathlib import Path
 import stat
@@ -20,7 +19,6 @@ from tests.evaluation.issue_registry import (
     _assert_no_link_ancestors,
     _directory_identity,
     _is_link_or_reparse_point,
-    _read_regular_file_bytes,
 )
 
 
@@ -127,14 +125,6 @@ def _collect_files(
     return tuple(sorted(files, key=lambda item: item.as_posix()))
 
 
-def _observation_id(path: Path, evaluation_root: Path) -> str:
-    parent_identity = _directory_identity(path.parent)
-    content = _read_regular_file_bytes(path, parent_identity)
-    digest = hashlib.sha256(content).hexdigest()
-    relative = path.relative_to(evaluation_root).as_posix()
-    return f"failure-file:{relative}:{digest}"
-
-
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -166,7 +156,6 @@ def main(
                 active_registry.ingest_failure_file(
                     path,
                     observed_at=observed_at,
-                    observation_id=_observation_id(path, evaluation_root),
                 )
             )
     except Exception as error:

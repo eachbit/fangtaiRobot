@@ -219,6 +219,66 @@ class IssueRegistryTests(unittest.TestCase):
         )
         self.assertNotEqual(first, second)
 
+    def test_ingest_failure_bytes_derives_idempotent_observation_from_snapshot(self) -> None:
+        registry = IssueRegistry(self.root)
+        path = self.write_public_failure_file(self.root.parent)
+        data = path.read_bytes()
+
+        first = registry.ingest_failure_bytes(
+            data,
+            observed_at="2026-07-16T00:00:00Z",
+        )
+        repeated = registry.ingest_failure_bytes(
+            data,
+            observed_at="2026-07-17T00:00:00Z",
+        )
+
+        self.assertEqual(first, repeated)
+        self.assertEqual(registry.load(first[0])["occurrences"], 1)
+        self.assertEqual(len(list(registry.observations_root.glob("*.json"))), 1)
+
+    def test_ingest_failure_file_uses_open_descriptor_snapshot_during_replacement(self) -> None:
+        registry = IssueRegistry(self.root)
+        target = self.write_public_failure_file(
+            self.root.parent,
+            self.failure("snapshot-a", code="blocking.snapshot-a"),
+        )
+        replacement = self.write_public_failure_file(
+            self.root.parent,
+            self.failure("snapshot-b", code="blocking.snapshot-b"),
+        )
+        snapshot = self.root.parent / "opened-snapshot.json"
+        snapshot.write_bytes(target.read_bytes())
+        real_open = os.open
+        swapped = False
+
+        def open_then_replace(
+            path: str | os.PathLike[str],
+            flags: int,
+            mode: int = 0o777,
+        ) -> int:
+            nonlocal swapped
+            if Path(path) == target and not swapped:
+                descriptor = real_open(snapshot, flags, mode)
+                os.replace(replacement, target)
+                swapped = True
+                return descriptor
+            return real_open(path, flags, mode)
+
+        with mock.patch.object(issue_registry.os, "open", side_effect=open_then_replace):
+            touched = registry.ingest_failure_file(
+                target,
+                observed_at="2026-07-16T00:00:00Z",
+            )
+
+        self.assertTrue(swapped)
+        self.assertEqual(len(touched), 1)
+        self.assertEqual(
+            registry.load(touched[0])["violation_code"],
+            "blocking.snapshot-a",
+        )
+        self.assertEqual(len(list(registry.observations_root.glob("*.json"))), 1)
+
     def test_ingest_failure_file_rejects_holdout_and_legacy_artifacts(self) -> None:
         registry = IssueRegistry(self.root)
         secret = "PRIVATE-HOLDOUT-MESSAGE"
