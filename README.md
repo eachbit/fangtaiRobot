@@ -159,6 +159,15 @@ python scripts/manage_evaluation_issue.py <issue-id> --status open
 python scripts/manage_evaluation_issue.py <issue-id> --status resolved --cycle-id <daily-or-deep-cycle-id>
 ```
 
+已有的公开评测失败文件可以导入固定的 issue registry。单个文件和目录参数都必须位于仓库的 `artifacts/evaluation/` 内；目录默认只扫描直接包含的 JSON，`--recursive` 还会扫描后代 `failures/` 目录：
+
+```powershell
+python scripts/import_evaluation_failures.py artifacts/evaluation/<run>/failures
+python scripts/import_evaluation_failures.py --recursive artifacts/evaluation/cycles/<cycle-id>
+```
+
+只有新版 public runner 写出的 failure JSON 含有严格脱敏的 `scenario_context`，可以导入。旧版无 context 文件和仅含场景哈希、违反代码计数的 holdout 文件都会被拒绝；导入流程不会补写或暴露 holdout context/messages。相同路径和内容重复导入是幂等的。命令成功返回 `0` 并打印 touched issue IDs，任一验证或 I/O 错误返回 `2`。
+
 公开语料 issue 可以先导出最小化回归候选：
 
 ```powershell

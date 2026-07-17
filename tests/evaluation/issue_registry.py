@@ -25,6 +25,13 @@ ISSUE_STATUSES = frozenset({"open", "verifying", "resolved"})
 ISSUE_ID_PATTERN = re.compile(r"issue-[0-9a-f]{24}\Z")
 HISTORY_LIMIT = 256
 
+_FAILURE_FILE_ATTACHMENTS = frozenset(
+    {"minimized", "minimization", "intermediates", "scenario_context"}
+)
+_PUBLIC_CONTEXT_FIELDS = frozenset(
+    {"holdout", "health_bucket", "intent", "expectation", "scenario"}
+)
+
 _SCHEMA_VERSION = 1
 _SCENARIO_HASH_PATTERN = re.compile(
     r"(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z"
@@ -1795,6 +1802,81 @@ class IssueRegistry:
                 self._rebuild_index()
 
         return issue_ids
+
+    def ingest_failure_file(
+        self,
+        path: str | os.PathLike[str],
+        observed_at: str,
+        observation_id: str | None = None,
+    ) -> tuple[str, ...]:
+        if not isinstance(path, (str, os.PathLike)):
+            raise ValueError("failure file path must be path-like")
+        lexical_path = Path(path)
+        if ".." in lexical_path.parts:
+            raise ValueError("failure file path must not contain parent traversal parts")
+        if not lexical_path.is_absolute():
+            lexical_path = Path.cwd() / lexical_path
+        failure_path = Path(os.path.abspath(lexical_path))
+        _assert_no_link_ancestors(failure_path)
+        metadata = failure_path.lstat()
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("failure file path must be a regular file")
+        parent_identity = _directory_identity(failure_path.parent)
+        raw = _read_regular_file_bytes(failure_path, parent_identity)
+        try:
+            payload = _strict_json_loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ValueError("failure file is not valid strict JSON") from exc
+        if type(payload) is not dict:
+            raise ValueError("failure file must contain a JSON object")
+        _json_value(payload)
+
+        allowed = FailureRecord._FIELDS | _FAILURE_FILE_ATTACHMENTS
+        fields = set(payload)
+        unexpected = fields - allowed
+        if unexpected:
+            raise ValueError(
+                f"failure file contains unsupported fields: {sorted(unexpected)}"
+            )
+        missing = (FailureRecord._FIELDS | {"scenario_context"}) - fields
+        if missing:
+            raise ValueError(
+                f"failure file is missing required fields: {sorted(missing)}"
+            )
+
+        if "minimized" in payload and type(payload["minimized"]) is not bool:
+            raise ValueError("failure file minimized attachment must be boolean")
+        if "minimization" in payload:
+            minimization = payload["minimization"]
+            if type(minimization) is not dict or set(minimization) != {
+                "attempts",
+                "reached_cap",
+            }:
+                raise ValueError("failure file minimization attachment is invalid")
+            if type(minimization["attempts"]) is not int or minimization["attempts"] < 0:
+                raise ValueError("failure file minimization attempts is invalid")
+            if type(minimization["reached_cap"]) is not bool:
+                raise ValueError("failure file minimization reached_cap is invalid")
+        if "intermediates" in payload and type(payload["intermediates"]) is not list:
+            raise ValueError("failure file intermediates attachment must be an array")
+
+        context = payload["scenario_context"]
+        if type(context) is not dict or set(context) != _PUBLIC_CONTEXT_FIELDS:
+            raise ValueError("failure file scenario_context is not a strict public context")
+        if context.get("holdout") is not False:
+            raise ValueError("holdout failure artifacts cannot be imported")
+
+        failure = FailureRecord.from_dict(
+            {field: payload[field] for field in FailureRecord._FIELDS}
+        )
+        self._public_context(context, failure)
+        report = EvaluationReport(1, 0, (failure,), {}, {}, {})
+        return self.ingest(
+            report,
+            {failure.scenario_id: context},
+            observed_at=observed_at,
+            observation_id=observation_id,
+        )
 
     def load(self, issue_id: str) -> dict[str, Any]:
         issue_id = _validate_issue_id(issue_id)

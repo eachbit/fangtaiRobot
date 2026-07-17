@@ -404,6 +404,55 @@ class EvaluationReportTests(unittest.TestCase):
             )
             self.assertEqual(failure_payload["scenario_hash"], "0123456789abcdef")
             self.assertEqual(failure_payload["violation_codes"], {"secret.failure": 1})
+            self.assertNotIn("scenario_context", failure_payload)
+
+    def test_public_failure_artifact_contains_sanitized_scenario_context(self) -> None:
+        scenario = Scenario(
+            "public-case",
+            HealthPersona("persona-public", "healthy"),
+            ("Plan dinner.",),
+            MenuExpectation(dish_count=2),
+            7,
+            "hard_constraint",
+        )
+        failure = FailureRecord(
+            scenario.scenario_id,
+            scenario.seed,
+            "abc123",
+            scenario.messages,
+            ("Dinner.",),
+            (Violation("runner.failure", "blocking", "Failed", None),),
+            12.5,
+        )
+        context = {
+            "holdout": False,
+            "health_bucket": scenario.persona.primary_bucket,
+            "intent": scenario.intent,
+            "expectation": scenario.expectation.to_dict(),
+            "scenario": {
+                **scenario.to_dict(),
+                "session_id": "must-not-persist",
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            write_report(
+                EvaluationReport(1, 0, (failure,), {}, {}, {}),
+                output,
+                scenario_context={failure.scenario_id: context},
+                minimizations={failure.scenario_id: {"attempts": 3, "reached_cap": False}},
+            )
+            payload = json.loads(
+                next((output / "failures").glob("*.json")).read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(
+            set(payload) - FailureRecord._FIELDS,
+            {"minimized", "minimization", "intermediates", "scenario_context"},
+        )
+        self.assertEqual(payload["scenario_context"]["holdout"], False)
+        self.assertNotIn("session_id", json.dumps(payload, ensure_ascii=False))
 
     def test_safe_failure_filenames_are_stable_distinct_and_do_not_overwrite(self) -> None:
         first_id = "a/b"
@@ -843,6 +892,13 @@ class EvaluationRunnerTests(unittest.TestCase):
             failures_dir = output / "failures"
             self.assertEqual(len(first.failures), 2)
             self.assertEqual(len(list(failures_dir.glob("*.json"))), 2)
+            first_payload = json.loads(
+                next(failures_dir.glob("*.json")).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                first_payload["scenario_context"],
+                runner.scenario_context[first_payload["scenario_id"]],
+            )
 
             keep_file = failures_dir / "user-notes.txt"
             keep_file.write_text("keep", encoding="utf-8")

@@ -18,6 +18,7 @@ from tests.evaluation.issue_registry import (
     IssueRegistry,
     issue_fingerprint,
 )
+from tests.evaluation.report import write_report
 from tests.evaluation.schemas import (
     EvaluationReport,
     FailureRecord,
@@ -110,13 +111,18 @@ class IssueRegistryTests(unittest.TestCase):
             return result.returncode == 0
 
     @staticmethod
-    def completed_cycle(issue_ids: list[str] | None = None) -> dict[str, object]:
+    def completed_cycle(
+        issue_ids: list[str] | None = None,
+        *,
+        mode: str = "daily",
+    ) -> dict[str, object]:
         cycle_issue_ids = issue_ids or []
+        expected_total = {"daily": 2000, "deep": 10000}[mode]
         return {
             "schema_version": 1,
             "cycle_id": "registry-verification",
             "status": "completed",
-            "mode": "daily",
+            "mode": mode,
             "base_seed": 40,
             "target_rounds": 1,
             "commit_sha": "abc123",
@@ -129,8 +135,8 @@ class IssueRegistryTests(unittest.TestCase):
                     "index": 0,
                     "seed": 40,
                     "status": "completed",
-                    "total": 1,
-                    "passed": 1,
+                    "total": expected_total,
+                    "passed": expected_total,
                     "failures": 0,
                     "elapsed_ms": 1.0,
                     "output_path": "rounds/0001-40",
@@ -159,6 +165,126 @@ class IssueRegistryTests(unittest.TestCase):
         )
         self.assertEqual(len(touched), 1)
         return touched[0]
+
+    def write_public_failure_file(
+        self,
+        directory: Path,
+        failure: FailureRecord | None = None,
+        *,
+        context: dict[str, object] | None = None,
+    ) -> Path:
+        value = failure or self.failure()
+        output = directory / f"output-{value.scenario_id}"
+        write_report(
+            self.report(value),
+            output,
+            scenario_context={
+                value.scenario_id: context
+                or self.context(self.scenario(value.scenario_id, seed=value.seed))
+            },
+        )
+        return next((output / "failures").glob("*.json"))
+
+    def test_ingest_failure_file_imports_public_artifacts_idempotently(self) -> None:
+        registry = IssueRegistry(self.root)
+        first_path = self.write_public_failure_file(self.root.parent)
+
+        first = registry.ingest_failure_file(
+            first_path,
+            observed_at="2026-07-16T00:00:00Z",
+            observation_id="failure-file:first",
+        )
+        repeated = registry.ingest_failure_file(
+            first_path,
+            observed_at="2026-07-16T00:00:00Z",
+            observation_id="failure-file:first",
+        )
+
+        self.assertEqual(first, repeated)
+        self.assertEqual(registry.load(first[0])["occurrences"], 1)
+
+        second_failure = self.failure(
+            "scenario-002",
+            seed=20,
+            code="schema.invalid",
+        )
+        second_path = self.write_public_failure_file(
+            self.root.parent,
+            second_failure,
+        )
+        second = registry.ingest_failure_file(
+            second_path,
+            observed_at="2026-07-17T00:00:00Z",
+            observation_id="failure-file:second",
+        )
+        self.assertNotEqual(first, second)
+
+    def test_ingest_failure_file_rejects_holdout_and_legacy_artifacts(self) -> None:
+        registry = IssueRegistry(self.root)
+        secret = "PRIVATE-HOLDOUT-MESSAGE"
+        holdout_path = self.root.parent / "holdout.json"
+        holdout_path.write_text(
+            json.dumps(
+                {
+                    "holdout": True,
+                    "scenario_hash": "a" * 64,
+                    "violation_codes": {"private.failure": 1},
+                    "private": secret,
+                }
+            ),
+            encoding="utf-8",
+        )
+        legacy_path = self.root.parent / "legacy.json"
+        legacy_path.write_text(json.dumps(self.failure().to_dict()), encoding="utf-8")
+
+        for path in (holdout_path, legacy_path):
+            with self.subTest(path=path.name):
+                with self.assertRaises(ValueError) as raised:
+                    registry.ingest_failure_file(
+                        path,
+                        observed_at="2026-07-16T00:00:00Z",
+                    )
+                self.assertNotIn(secret, str(raised.exception))
+        self.assertEqual(list(registry.status_directories["open"].glob("*.json")), [])
+
+    def test_ingest_failure_file_rejects_malformed_and_unsafe_inputs(self) -> None:
+        registry = IssueRegistry(self.root)
+        valid_path = self.write_public_failure_file(self.root.parent)
+        valid = json.loads(valid_path.read_text(encoding="utf-8"))
+        cases = {
+            "malformed.json": "{",
+            "duplicate.json": '{"scenario_id":"a","scenario_id":"b"}',
+            "nonfinite.json": '{"elapsed_ms":NaN}',
+            "array.json": "[]",
+            "extra.json": json.dumps({**valid, "messages": ["dangerous"]}),
+        }
+        for name, content in cases.items():
+            with self.subTest(name=name):
+                path = self.root.parent / name
+                path.write_text(content, encoding="utf-8")
+                with self.assertRaises((ValueError, UnicodeError)):
+                    registry.ingest_failure_file(
+                        path,
+                        observed_at="2026-07-16T00:00:00Z",
+                    )
+
+        with self.assertRaises(ValueError):
+            registry.ingest_failure_file(
+                self.root.parent,
+                observed_at="2026-07-16T00:00:00Z",
+            )
+
+        link = self.root.parent / "linked-failure.json"
+        try:
+            link.symlink_to(valid_path)
+        except OSError:
+            pass
+        else:
+            with self.assertRaisesRegex(ValueError, "link|reparse"):
+                registry.ingest_failure_file(
+                    link,
+                    observed_at="2026-07-16T00:00:00Z",
+                )
 
     def test_constants_and_issue_identifier_format(self) -> None:
         self.assertEqual(ISSUE_STATUSES, frozenset({"open", "verifying", "resolved"}))
@@ -2090,7 +2216,7 @@ class IssueRegistryTests(unittest.TestCase):
                         verification_cycle=cycle,
                     )
 
-        deep_cycle = {**self.completed_cycle(), "mode": "deep"}
+        deep_cycle = self.completed_cycle(mode="deep")
         resolved = registry.set_status(
             issue_id,
             "resolved",

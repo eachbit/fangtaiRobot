@@ -1024,13 +1024,16 @@ class ManageEvaluationIssueCliTests(unittest.TestCase):
         return registry, issue_ids[0]
 
     def create_cycle(self, cycle_id: str, mode: str) -> Path:
+        expected_total = {"quick": 120, "daily": 2000, "deep": 10000}[mode]
         run_cycle(
             self.evaluation_root,
             cycle_id,
             mode,
             1,
             40,
-            runner_factory=RecordingFactory(),
+            runner_factory=RecordingFactory(
+                {40: EvaluationReport(expected_total, expected_total, (), {}, {}, {})}
+            ),
             registry=FakeRegistry(),
             clock=StepClock(1.0, 1.125),
             utc_now=lambda: "2026-07-16T01:02:03Z",
@@ -1038,6 +1041,40 @@ class ManageEvaluationIssueCliTests(unittest.TestCase):
             repository_root=self.repository_root,
         )
         return self.evaluation_root / "cycles" / cycle_id / "cycle.json"
+
+    def test_completed_cycle_validator_requires_exact_mode_total_per_round(self) -> None:
+        daily_path = self.create_cycle("daily-size", "daily")
+        daily = json.loads(daily_path.read_text(encoding="utf-8"))
+
+        for total in (0, 4, 1999):
+            with self.subTest(mode="daily", total=total):
+                invalid = json.loads(json.dumps(daily))
+                invalid["rounds"][0].update(
+                    {"total": total, "passed": total, "failures": 0}
+                )
+                with self.assertRaisesRegex(ValueError, "2000"):
+                    autonomous_cycle._validate_completed_cycle_payload(
+                        invalid,
+                        cycle_id="daily-size",
+                    )
+
+        self.assertEqual(
+            autonomous_cycle._validate_completed_cycle_payload(
+                daily,
+                cycle_id="daily-size",
+            )["rounds"][0]["total"],
+            2000,
+        )
+
+        deep_path = self.create_cycle("deep-size", "deep")
+        deep = json.loads(deep_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            autonomous_cycle._validate_completed_cycle_payload(
+                deep,
+                cycle_id="deep-size",
+            )["rounds"][0]["total"],
+            10000,
+        )
 
     def test_cli_transitions_issue_with_strict_daily_cycle(self) -> None:
         registry, issue_id = self.create_issue()

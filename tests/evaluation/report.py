@@ -262,6 +262,7 @@ def write_report(
     intermediates: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     minimizations: Mapping[str, Mapping[str, Any]] | None = None,
     source_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+    scenario_context: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Path]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -269,6 +270,8 @@ def write_report(
     intermediates = intermediates or {}
     minimizations = minimizations or {}
     source_metadata = source_metadata or {}
+    contexts_supplied = scenario_context is not None
+    scenario_context = scenario_context or {}
 
     base = report.to_dict()
     sanitized_failures: list[dict[str, Any]] = []
@@ -327,16 +330,20 @@ def write_report(
             filename = safe_scenario_filename(failure.scenario_id) + ".json"
             payload = failure.to_dict()
             payload["minimized"] = failure.original_messages != failure.minimized_messages
-            payload["minimizer"] = dict(
+            payload["minimization"] = dict(
                 minimizations.get(
                     failure.scenario_id,
                     {"attempts": 0, "reached_cap": False},
                 )
             )
-            payload["known_gap"] = any(
-                violation.severity == "known_gap" for violation in failure.violations
-            )
             payload["intermediates"] = list(intermediates.get(failure.scenario_id, ()))
+            if contexts_supplied:
+                context = scenario_context.get(failure.scenario_id)
+                if not isinstance(context, Mapping):
+                    raise ValueError(
+                        f"missing scenario context for {failure.scenario_id}"
+                    )
+                payload["scenario_context"] = dict(context)
         _write_json(failures_dir / filename, _strip_session_ids(payload))
 
     return {

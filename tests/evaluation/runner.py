@@ -920,5 +920,6 @@ class EvaluationRunner:
             intermediates=self.intermediates,
             minimizations=minimizations,
             source_metadata=self.source_metadata,
+            scenario_context=self.scenario_context,
         )
         return report

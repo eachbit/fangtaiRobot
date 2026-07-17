@@ -507,6 +507,11 @@ def _validate_completed_cycle_payload(
         record["status"] != "completed" for record in state["rounds"]
     ):
         raise ValueError("verification cycle rounds must all be completed")
+    expected_total = MODE_COUNTS[state["mode"]]
+    if any(record["total"] != expected_total for record in state["rounds"]):
+        raise ValueError(
+            f"verification cycle rounds must each contain {expected_total} evaluations"
+        )
     return state
 
 
