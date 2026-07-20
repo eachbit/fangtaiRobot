@@ -48,7 +48,7 @@ def rank_recipes(
                 "warnings": health["warnings"],
             }
         )
-    scored.sort(key=lambda item: item["score"], reverse=True)
+    scored.sort(key=lambda item: (-item["score"], item["recipe"].id))
     return scored[:limit]
 
 

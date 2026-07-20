@@ -12,6 +12,18 @@ class Recipe:
 
 
 @dataclass(frozen=True)
+class HealthMetrics:
+    fasting_glucose_mmol_l: float
+    systolic_blood_pressure_mm_hg: int
+    diastolic_blood_pressure_mm_hg: int
+    total_cholesterol_mmol_l: float
+    triglycerides_mmol_l: float
+    ldl_mmol_l: float
+    hdl_mmol_l: float
+    uric_acid_umol_l: int
+
+
+@dataclass(frozen=True)
 class UserProfile:
     id: int
     gender: str
@@ -22,6 +34,10 @@ class UserProfile:
     taste_preference: str
     allergens: list[str]
     health_goals: list[str]
+    height_cm: float
+    weight_kg: float
+    bmi: float
+    checkup_metrics: HealthMetrics | None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -30,6 +46,10 @@ class Constraints:
     meal: str | None = None
     people_count: int | None = None
     requested_dish_count: int | None = None
+    requested_meat_count: int | None = None
+    requested_vegetable_count: int | None = None
+    minimum_cooking_methods: int | None = None
+    clarification_required: bool = False
     taste: str | None = None
     avoid_tastes: list[str] = field(default_factory=list)
     health_goals: list[str] = field(default_factory=list)
@@ -47,6 +67,10 @@ class Constraints:
             "meal": self.meal,
             "people_count": self.people_count,
             "requested_dish_count": self.requested_dish_count,
+            "requested_meat_count": self.requested_meat_count,
+            "requested_vegetable_count": self.requested_vegetable_count,
+            "minimum_cooking_methods": self.minimum_cooking_methods,
+            "clarification_required": self.clarification_required,
             "taste": self.taste,
             "avoid_tastes": self.avoid_tastes,
             "health_goals": self.health_goals,

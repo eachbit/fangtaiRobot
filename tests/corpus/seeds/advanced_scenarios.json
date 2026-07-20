@@ -1,0 +1,760 @@
+[
+  {
+    "scenario_id": "adv-healthy-official-profile-001",
+    "persona": {
+      "persona_id": "official-7",
+      "primary_bucket": "healthy",
+      "source_user_id": 7,
+      "gender": "男",
+      "age": 24,
+      "labor_intensity": "高",
+      "taste_preference": "重口味",
+      "height_cm": 163.3,
+      "weight_kg": 58.1,
+      "bmi": 21.8,
+      "special_groups": [],
+      "allergens": [],
+      "health_goals": ["增肌", "提高耐力"]
+    },
+    "messages": ["饮食目标是增肌、提高耐力；按我的健康档案推荐四道家常菜，兼顾增肌和耐力训练。"],
+    "expectation": {"dish_count": 4},
+    "seed": 91001,
+    "intent": "official_profile_recommendation",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-healthy-negative-hypertension-002",
+    "persona": {
+      "persona_id": "official-44",
+      "primary_bucket": "healthy",
+      "source_user_id": 44,
+      "gender": "女",
+      "age": 22,
+      "labor_intensity": "中",
+      "taste_preference": "甜食",
+      "special_groups": [],
+      "allergens": [],
+      "health_goals": ["减脂", "美容", "调理肠胃"]
+    },
+    "messages": ["饮食目标是减脂、美容、调理肠胃；我没有高血压，也没有食物过敏，给我四道菜。"],
+    "expectation": {"dish_count": 4},
+    "seed": 91002,
+    "intent": "negative_health_expression",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-healthy-ratio-003",
+    "persona": {
+      "persona_id": "official-31",
+      "primary_bucket": "healthy",
+      "source_user_id": 31,
+      "gender": "男",
+      "age": 21,
+      "labor_intensity": "高",
+      "taste_preference": "辣味",
+      "special_groups": [],
+      "allergens": [],
+      "health_goals": ["增肌", "提高爆发力"]
+    },
+    "messages": ["饮食目标是增肌、提高爆发力；安排六道菜，明确按荤素一比二，也就是两荤四素，训练日也要有足量蛋白质。"],
+    "expectation": {"dish_count": 6, "meat_count": 2, "vegetable_count": 4},
+    "seed": 91003,
+    "intent": "structure_ratio",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-healthy-cooking-diversity-004",
+    "persona": {
+      "persona_id": "synthetic-healthy-metrics-004",
+      "primary_bucket": "healthy",
+      "gender": "女",
+      "age": 30,
+      "labor_intensity": "中",
+      "taste_preference": "清淡",
+      "height_cm": 165.0,
+      "weight_kg": 58.0,
+      "bmi": 21.3,
+      "checkup_metrics": {
+        "fasting_glucose_mmol_l": 4.8,
+        "systolic_blood_pressure_mm_hg": 118,
+        "diastolic_blood_pressure_mm_hg": 76,
+        "total_cholesterol_mmol_l": 4.2
+      },
+      "special_groups": [],
+      "allergens": [],
+      "health_goals": ["均衡营养"]
+    },
+    "messages": ["饮食目标是均衡营养；体检指标正常，推荐四道清淡菜，至少采用蒸、炒、炖等三种不同烹饪方式。"],
+    "expectation": {"dish_count": 4, "minimum_cooking_methods": 3},
+    "seed": 91004,
+    "intent": "cooking_diversity",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-healthy-add-vegetables-preserve-005",
+    "persona": {
+      "persona_id": "official-12",
+      "primary_bucket": "healthy",
+      "source_user_id": 12,
+      "gender": "女",
+      "age": 23,
+      "labor_intensity": "低",
+      "taste_preference": "甜食",
+      "special_groups": [],
+      "allergens": ["坚果"],
+      "health_goals": ["补气血", "美容养颜"]
+    },
+    "messages": [
+      "我对坚果过敏；饮食目标是补气血、美容养颜；先推荐四道菜，两荤两素。",
+      "再多加两道素菜，原来的四道菜和坚果过敏约束都保留。"
+    ],
+    "expectation": {
+      "dish_count": 6,
+      "meat_count": 2,
+      "vegetable_count": 4,
+      "forbidden_terms": ["坚果"],
+      "preserve_unaffected": true
+    },
+    "seed": 91005,
+    "intent": "relative_revision",
+    "dialogue_mode": "multi_turn"
+  },
+  {
+    "scenario_id": "adv-healthy-multi-person-tradeoff-006",
+    "persona": {
+      "persona_id": "synthetic-healthy-shared-table-006",
+      "primary_bucket": "healthy",
+      "gender": "男",
+      "age": 27,
+      "labor_intensity": "中",
+      "special_groups": [],
+      "allergens": [],
+      "health_goals": ["增肌", "减脂"]
+    },
+    "messages": ["两人的饮食目标是增肌、减脂；我和室友两个人吃四道菜：我想增肌，他要严格减脂；蛋白质要多但总热量要低，先问清优先级再配。"],
+    "expectation": {"dish_count": 4, "clarification_required": true},
+    "seed": 91006,
+    "intent": "multi_person_conflict",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-single-hypertension-official-007",
+    "persona": {
+      "persona_id": "official-13",
+      "primary_bucket": "single_condition",
+      "source_user_id": 13,
+      "gender": "男",
+      "age": 47,
+      "labor_intensity": "高",
+      "taste_preference": "清淡",
+      "height_cm": 172.3,
+      "weight_kg": 76.9,
+      "bmi": 25.9,
+      "checkup_metrics": {
+        "fasting_glucose_mmol_l": 5.5,
+        "systolic_blood_pressure_mm_hg": 142,
+        "diastolic_blood_pressure_mm_hg": 96,
+        "total_cholesterol_mmol_l": 5.17,
+        "triglycerides_mmol_l": 0.93,
+        "ldl_mmol_l": 2.77,
+        "hdl_mmol_l": 1.48,
+        "uric_acid_umol_l": 327
+      },
+      "special_groups": ["高血压"],
+      "allergens": [],
+      "health_goals": ["降压", "补肾", "改善睡眠"]
+    },
+    "messages": ["健康情况是高血压；饮食目标是降压、补肾、改善睡眠；需要低盐，推荐四道清淡菜。"],
+    "expectation": {"dish_count": 4},
+    "seed": 91007,
+    "intent": "single_condition_recommendation",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-single-glucose-ratio-008",
+    "persona": {
+      "persona_id": "official-10",
+      "primary_bucket": "single_condition",
+      "source_user_id": 10,
+      "gender": "女",
+      "age": 41,
+      "labor_intensity": "中",
+      "taste_preference": "少糖",
+      "special_groups": ["高血糖"],
+      "allergens": [],
+      "health_goals": ["控糖", "减脂", "调理内分泌"]
+    },
+    "messages": ["健康情况是高血糖；饮食目标是控糖、减脂、调理内分泌；六道菜按两荤四素的1:2比例安排，不要用含糖酱汁。"],
+    "expectation": {
+      "dish_count": 6,
+      "meat_count": 2,
+      "vegetable_count": 4,
+      "forbidden_terms": ["糖"]
+    },
+    "seed": 91008,
+    "intent": "structure_ratio",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-single-uric-allergy-cooking-009",
+    "persona": {
+      "persona_id": "official-11",
+      "primary_bucket": "single_condition",
+      "source_user_id": 11,
+      "gender": "男",
+      "age": 33,
+      "labor_intensity": "中",
+      "taste_preference": "清淡",
+      "special_groups": ["高尿酸"],
+      "allergens": ["豆制品"],
+      "health_goals": ["降尿酸", "护肝", "减脂"]
+    },
+    "messages": ["健康情况是高尿酸；我对豆制品过敏；饮食目标是降尿酸、护肝、减脂；四道菜避开豆制品，至少用三种烹饪方式，不要全是炒菜。"],
+    "expectation": {
+      "dish_count": 4,
+      "minimum_cooking_methods": 3,
+      "forbidden_terms": ["豆制品"]
+    },
+    "seed": 91009,
+    "intent": "cooking_diversity",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-single-hypertension-metrics-tradeoff-010",
+    "persona": {
+      "persona_id": "synthetic-single-hypertension-010",
+      "primary_bucket": "single_condition",
+      "gender": "男",
+      "age": 52,
+      "labor_intensity": "中",
+      "height_cm": 172.0,
+      "weight_kg": 82.0,
+      "bmi": 27.7,
+      "checkup_metrics": {
+        "fasting_glucose_mmol_l": 5.3,
+        "systolic_blood_pressure_mm_hg": 151,
+        "diastolic_blood_pressure_mm_hg": 94,
+        "ldl_mmol_l": 3.2,
+        "hdl_mmol_l": 1.1
+      },
+      "special_groups": ["高血压"],
+      "allergens": [],
+      "health_goals": ["降压", "控制体重", "保证蛋白质"]
+    },
+    "messages": ["健康情况是高血压；饮食目标是降压、控制体重、保证蛋白质；身高172厘米、体重82公斤，血压151/94。四道菜要低盐减重，但别用只吃水煮菜的方式牺牲蛋白质和口感。"],
+    "expectation": {"dish_count": 4, "minimum_cooking_methods": 2},
+    "seed": 91010,
+    "intent": "nutrition_tradeoff",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-single-allergy-append-preserve-011",
+    "persona": {
+      "persona_id": "official-19",
+      "primary_bucket": "single_condition",
+      "source_user_id": 19,
+      "gender": "男",
+      "age": 42,
+      "labor_intensity": "高",
+      "taste_preference": "清淡",
+      "special_groups": ["高血压"],
+      "allergens": ["花生"],
+      "health_goals": ["降压", "护心", "减脂"]
+    },
+    "messages": [
+      "健康情况是高血压；我对花生过敏；饮食目标是降压、护心、减脂；先推荐四道低盐菜。",
+      "再加一条本餐忌口：不要芹菜；菜的数量和未受影响的菜都不要改。"
+    ],
+    "expectation": {
+      "dish_count": 4,
+      "forbidden_terms": ["花生", "芹菜"],
+      "preserve_unaffected": true
+    },
+    "seed": 91011,
+    "intent": "relative_revision",
+    "dialogue_mode": "multi_turn"
+  },
+  {
+    "scenario_id": "adv-single-ambiguous-vegetable-ratio-012",
+    "persona": {
+      "persona_id": "synthetic-single-glucose-012",
+      "primary_bucket": "single_condition",
+      "gender": "女",
+      "age": 48,
+      "special_groups": ["高血糖"],
+      "allergens": [],
+      "health_goals": ["控糖"]
+    },
+    "messages": ["健康情况是高血糖；饮食目标是控糖；六道菜里素菜多一点、荤菜少一点就行。具体多少我没想好，请先澄清比例。"],
+    "expectation": {"dish_count": 6, "clarification_required": true},
+    "seed": 91012,
+    "intent": "ambiguous_structure_ratio",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-multi-official-allergy-013",
+    "persona": {
+      "persona_id": "official-3",
+      "primary_bucket": "multi_condition",
+      "source_user_id": 3,
+      "gender": "男",
+      "age": 45,
+      "labor_intensity": "高",
+      "taste_preference": "清淡",
+      "height_cm": 180.1,
+      "weight_kg": 78.2,
+      "bmi": 24.1,
+      "checkup_metrics": {
+        "fasting_glucose_mmol_l": 7.3,
+        "systolic_blood_pressure_mm_hg": 146,
+        "diastolic_blood_pressure_mm_hg": 93,
+        "total_cholesterol_mmol_l": 4.63,
+        "triglycerides_mmol_l": 1.16,
+        "ldl_mmol_l": 2.58,
+        "hdl_mmol_l": 1.29,
+        "uric_acid_umol_l": 271
+      },
+      "special_groups": ["高血压", "高血糖"],
+      "allergens": ["花生"],
+      "health_goals": ["降血压", "控糖", "护心"]
+    },
+    "messages": ["健康情况是高血压、高血糖；我对花生过敏；饮食目标是降血压、控糖、护心；按档案给我四道菜，必须严格避开花生。"],
+    "expectation": {"dish_count": 4, "forbidden_terms": ["花生"]},
+    "seed": 91013,
+    "intent": "multi_condition_allergy",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-multi-hypertension-uric-ratio-014",
+    "persona": {
+      "persona_id": "official-5",
+      "primary_bucket": "multi_condition",
+      "source_user_id": 5,
+      "gender": "男",
+      "age": 52,
+      "labor_intensity": "低",
+      "taste_preference": "清淡",
+      "special_groups": ["高尿酸", "高血压"],
+      "allergens": [],
+      "health_goals": ["降尿酸", "降压", "护肾"]
+    },
+    "messages": ["健康情况是高尿酸、高血压；饮食目标是降尿酸、降压、护肾；六道低盐低嘌呤菜按一荤两素，也就是两荤四素。"],
+    "expectation": {"dish_count": 6, "meat_count": 2, "vegetable_count": 4},
+    "seed": 91014,
+    "intent": "structure_ratio",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-multi-glucose-uric-cooking-015",
+    "persona": {
+      "persona_id": "official-17",
+      "primary_bucket": "multi_condition",
+      "source_user_id": 17,
+      "gender": "男",
+      "age": 55,
+      "labor_intensity": "低",
+      "taste_preference": "无糖",
+      "special_groups": ["高血糖", "高尿酸"],
+      "allergens": ["海鲜"],
+      "health_goals": ["控糖", "降尿酸", "护肾"]
+    },
+    "messages": ["健康情况是高血糖、高尿酸；我对海鲜过敏；饮食目标是控糖、降尿酸、护肾；推荐六道菜，至少三种烹饪方式，避免海鲜和额外糖。"],
+    "expectation": {
+      "dish_count": 6,
+      "minimum_cooking_methods": 3,
+      "forbidden_terms": ["海鲜", "糖"]
+    },
+    "seed": 91015,
+    "intent": "cooking_diversity",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-multi-metrics-nutrition-tradeoff-016",
+    "persona": {
+      "persona_id": "synthetic-multi-metabolic-016",
+      "primary_bucket": "multi_condition",
+      "gender": "女",
+      "age": 57,
+      "height_cm": 160.0,
+      "weight_kg": 76.0,
+      "bmi": 29.7,
+      "checkup_metrics": {
+        "fasting_glucose_mmol_l": 7.4,
+        "systolic_blood_pressure_mm_hg": 146,
+        "diastolic_blood_pressure_mm_hg": 91,
+        "total_cholesterol_mmol_l": 6.3,
+        "triglycerides_mmol_l": 2.4,
+        "ldl_mmol_l": 4.1,
+        "hdl_mmol_l": 0.9
+      },
+      "special_groups": ["高血压", "高血糖", "高血脂"],
+      "allergens": [],
+      "health_goals": ["控糖", "降压", "调节血脂", "控制体重", "足量蛋白质"]
+    },
+    "messages": ["健康情况是高血压、高血糖、高血脂；饮食目标是控糖、降压、调节血脂、控制体重、足量蛋白质；空腹血糖7.4、血压146/91、低密度脂蛋白4.1。四道菜要在控糖、低盐、低脂和足量蛋白质之间做取舍，不能只删掉主食。"],
+    "expectation": {"dish_count": 4},
+    "seed": 91016,
+    "intent": "nutrition_tradeoff",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-multi-replace-one-preserve-017",
+    "persona": {
+      "persona_id": "official-43",
+      "primary_bucket": "multi_condition",
+      "source_user_id": 43,
+      "gender": "男",
+      "age": 49,
+      "labor_intensity": "中",
+      "taste_preference": "少油",
+      "special_groups": ["高尿酸", "高血糖"],
+      "allergens": ["豆制品"],
+      "health_goals": ["降尿酸", "控糖", "护肾"]
+    },
+    "messages": [
+      "健康情况是高尿酸、高血糖；我对豆制品过敏；饮食目标是降尿酸、控糖、护肾；先给四道少油菜。",
+      "只换掉第二道菜，其他三道、菜数和所有健康约束都保留。"
+    ],
+    "expectation": {
+      "dish_count": 4,
+      "forbidden_terms": ["豆制品"],
+      "preserve_unaffected": true
+    },
+    "seed": 91017,
+    "intent": "relative_revision",
+    "dialogue_mode": "multi_turn"
+  },
+  {
+    "scenario_id": "adv-multi-person-allergy-conflict-018",
+    "persona": {
+      "persona_id": "synthetic-multi-shared-table-018",
+      "primary_bucket": "multi_condition",
+      "gender": "女",
+      "age": 50,
+      "special_groups": ["高血压", "高血糖"],
+      "allergens": ["虾"],
+      "health_goals": ["降压", "控糖"]
+    },
+    "messages": ["健康情况是高血压、高血糖；我对虾过敏；饮食目标是降压、控糖；三个人吃六道菜，父亲想吃海鲜，孩子只吃甜口。安全约束冲突时先澄清，不得拿虾折中。"],
+    "expectation": {
+      "dish_count": 6,
+      "forbidden_terms": ["虾"],
+      "clarification_required": true
+    },
+    "seed": 91018,
+    "intent": "multi_person_conflict",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-special-pregnancy-official-019",
+    "persona": {
+      "persona_id": "official-2",
+      "primary_bucket": "special_group",
+      "source_user_id": 2,
+      "gender": "女",
+      "age": 32,
+      "labor_intensity": "低",
+      "pregnancy_week": "22周",
+      "taste_preference": "酸甜",
+      "height_cm": 160.4,
+      "weight_kg": 64.1,
+      "bmi": 24.9,
+      "checkup_metrics": {
+        "fasting_glucose_mmol_l": 5.4,
+        "systolic_blood_pressure_mm_hg": 116,
+        "diastolic_blood_pressure_mm_hg": 81,
+        "total_cholesterol_mmol_l": 4.56,
+        "triglycerides_mmol_l": 1.02,
+        "ldl_mmol_l": 2.62,
+        "hdl_mmol_l": 1.67,
+        "uric_acid_umol_l": 261
+      },
+      "special_groups": ["孕妇"],
+      "allergens": [],
+      "health_goals": ["补钙", "补铁", "均衡营养"]
+    },
+    "messages": ["健康情况是孕妇；饮食目标是补钙、补铁、均衡营养；孕22周，推荐四道全熟家常菜。"],
+    "expectation": {"dish_count": 4},
+    "seed": 91019,
+    "intent": "special_group_recommendation",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-special-pregnancy-allergy-ratio-020",
+    "persona": {
+      "persona_id": "official-8",
+      "primary_bucket": "special_group",
+      "source_user_id": 8,
+      "gender": "女",
+      "age": 29,
+      "labor_intensity": "低",
+      "pregnancy_week": "16周",
+      "taste_preference": "酸辣",
+      "special_groups": ["孕妇"],
+      "allergens": ["芒果"],
+      "health_goals": ["补叶酸", "补铁", "防便秘"]
+    },
+    "messages": ["健康情况是孕妇；我对芒果过敏；饮食目标是补叶酸、补铁、防便秘；孕16周，六道菜按两荤四素安排，食材全熟。"],
+    "expectation": {
+      "dish_count": 6,
+      "meat_count": 2,
+      "vegetable_count": 4,
+      "forbidden_terms": ["芒果"]
+    },
+    "seed": 91020,
+    "intent": "structure_ratio",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-special-lactation-allergy-cooking-021",
+    "persona": {
+      "persona_id": "official-6",
+      "primary_bucket": "special_group",
+      "source_user_id": 6,
+      "gender": "女",
+      "age": 38,
+      "labor_intensity": "中",
+      "taste_preference": "清淡",
+      "special_groups": ["哺乳期"],
+      "allergens": ["海鲜", "鸡蛋"],
+      "health_goals": ["催乳", "补钙", "补铁"]
+    },
+    "messages": ["健康情况是哺乳期；我对海鲜和鸡蛋过敏；饮食目标是催乳、补钙、补铁；推荐四道菜避开两种过敏原，至少有三种烹饪方式。"],
+    "expectation": {
+      "dish_count": 4,
+      "minimum_cooking_methods": 3,
+      "forbidden_terms": ["海鲜", "鸡蛋"]
+    },
+    "seed": 91021,
+    "intent": "cooking_diversity",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-special-prepregnancy-calcium-tradeoff-022",
+    "persona": {
+      "persona_id": "official-4",
+      "primary_bucket": "special_group",
+      "source_user_id": 4,
+      "gender": "女",
+      "age": 26,
+      "labor_intensity": "中",
+      "taste_preference": "偏甜",
+      "special_groups": ["备孕"],
+      "allergens": ["牛奶"],
+      "health_goals": ["补气血", "调理月经", "养脾胃", "补铁", "补钙"]
+    },
+    "messages": ["健康情况是备孕；我对牛奶过敏；饮食目标是补气血、调理月经、养脾胃、补铁、补钙；四道菜要兼顾铁和钙来源，但不能用牛奶或把甜味当成补营养。"],
+    "expectation": {"dish_count": 4, "forbidden_terms": ["牛奶"]},
+    "seed": 91022,
+    "intent": "nutrition_tradeoff",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-special-pregnancy-add-vegetables-023",
+    "persona": {
+      "persona_id": "official-14",
+      "primary_bucket": "special_group",
+      "source_user_id": 14,
+      "gender": "女",
+      "age": 31,
+      "labor_intensity": "中",
+      "pregnancy_week": "30周",
+      "taste_preference": "偏咸",
+      "special_groups": ["孕妇"],
+      "allergens": ["螃蟹"],
+      "health_goals": ["补钙", "补铁", "控制体重"]
+    },
+    "messages": [
+      "健康情况是孕妇；我对螃蟹过敏；饮食目标是补钙、补铁、控制体重；孕30周，先来四道低盐菜，两荤两素。",
+      "只多加两道素菜，原来的四道菜、螃蟹过敏和低盐要求都保留。"
+    ],
+    "expectation": {
+      "dish_count": 6,
+      "meat_count": 2,
+      "vegetable_count": 4,
+      "forbidden_terms": ["螃蟹"],
+      "preserve_unaffected": true
+    },
+    "seed": 91023,
+    "intent": "relative_revision",
+    "dialogue_mode": "multi_turn"
+  },
+  {
+    "scenario_id": "adv-special-pregnancy-family-conflict-024",
+    "persona": {
+      "persona_id": "synthetic-special-pregnancy-024",
+      "primary_bucket": "special_group",
+      "gender": "女",
+      "age": 34,
+      "pregnancy_week": "28周",
+      "special_groups": ["孕妇"],
+      "allergens": [],
+      "health_goals": ["控制体重", "补铁"]
+    },
+    "messages": ["健康情况是孕妇；饮食目标是控制体重、补铁；一家三口吃四道菜：孕28周的我需要清淡全熟，配偶坚持重辣半熟牛肉。先澄清是否分餐，不能直接混成一道菜。"],
+    "expectation": {"dish_count": 4, "clarification_required": true},
+    "seed": 91024,
+    "intent": "multi_person_conflict",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-high-risk-metrics-clarification-025",
+    "persona": {
+      "persona_id": "synthetic-high-risk-metabolic-025",
+      "primary_bucket": "high_risk",
+      "gender": "男",
+      "age": 63,
+      "height_cm": 170.0,
+      "weight_kg": 88.0,
+      "bmi": 30.4,
+      "checkup_metrics": {
+        "fasting_glucose_mmol_l": 11.2,
+        "systolic_blood_pressure_mm_hg": 178,
+        "diastolic_blood_pressure_mm_hg": 108,
+        "total_cholesterol_mmol_l": 7.1,
+        "triglycerides_mmol_l": 3.5,
+        "ldl_mmol_l": 4.8,
+        "hdl_mmol_l": 0.8
+      },
+      "special_groups": ["高血压", "高血糖", "高血脂"],
+      "allergens": [],
+      "health_goals": ["控糖", "降压", "调节血脂"]
+    },
+    "messages": ["健康情况是高血压、高血糖、高血脂；饮食目标是控糖、降压、调节血脂；空腹血糖11.2、血压178/108、BMI30.4。想要四道晚餐，请先明确医疗边界并询问正在使用的药物。"],
+    "expectation": {"dish_count": 4, "clarification_required": true},
+    "seed": 91025,
+    "intent": "high_risk_clarification",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-high-risk-explicit-ratio-026",
+    "persona": {
+      "persona_id": "synthetic-high-risk-ratio-026",
+      "primary_bucket": "high_risk",
+      "gender": "女",
+      "age": 59,
+      "checkup_metrics": {
+        "fasting_glucose_mmol_l": 9.8,
+        "systolic_blood_pressure_mm_hg": 165,
+        "diastolic_blood_pressure_mm_hg": 101,
+        "uric_acid_umol_l": 510
+      },
+      "special_groups": ["高血压", "高血糖", "高尿酸"],
+      "allergens": [],
+      "health_goals": ["降压", "控糖", "降尿酸"]
+    },
+    "messages": ["健康情况是高血压、高血糖、高尿酸；饮食目标是降压、控糖、降尿酸；血压165/101、血糖9.8、尿酸510。六道菜明确两荤四素，同时先提示风险并确认用药和医生限制。"],
+    "expectation": {
+      "dish_count": 6,
+      "meat_count": 2,
+      "vegetable_count": 4,
+      "clarification_required": true
+    },
+    "seed": 91026,
+    "intent": "structure_ratio",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-high-risk-allergy-cooking-027",
+    "persona": {
+      "persona_id": "synthetic-high-risk-allergy-027",
+      "primary_bucket": "high_risk",
+      "gender": "男",
+      "age": 66,
+      "checkup_metrics": {
+        "fasting_glucose_mmol_l": 10.5,
+        "systolic_blood_pressure_mm_hg": 172,
+        "diastolic_blood_pressure_mm_hg": 105,
+        "uric_acid_umol_l": 536
+      },
+      "special_groups": ["高血压", "高血糖", "高尿酸"],
+      "allergens": ["花生", "虾"],
+      "health_goals": ["降压", "控糖", "护肾"]
+    },
+    "messages": ["健康情况是高血压、高血糖、高尿酸；我对花生和虾过敏；饮食目标是降压、控糖、护肾；四道菜必须避开过敏原，至少三种烹饪方式，并先确认医嘱。"],
+    "expectation": {
+      "dish_count": 4,
+      "minimum_cooking_methods": 3,
+      "forbidden_terms": ["花生", "虾"],
+      "clarification_required": true
+    },
+    "seed": 91027,
+    "intent": "cooking_diversity",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-high-risk-minimal-revision-028",
+    "persona": {
+      "persona_id": "synthetic-high-risk-revision-028",
+      "primary_bucket": "high_risk",
+      "gender": "女",
+      "age": 62,
+      "special_groups": ["高血压", "高血糖"],
+      "allergens": ["牛奶"],
+      "health_goals": ["降压", "控糖"]
+    },
+    "messages": [
+      "健康情况是高血压、高血糖；我对牛奶过敏；饮食目标是降压、控糖；先给四道菜并询问用药。",
+      "只把第三道换成素菜，其他菜、菜数、牛奶过敏和健康要求全部保留。"
+    ],
+    "expectation": {
+      "dish_count": 4,
+      "forbidden_terms": ["牛奶"],
+      "clarification_required": true,
+      "preserve_unaffected": true
+    },
+    "seed": 91028,
+    "intent": "relative_revision",
+    "dialogue_mode": "multi_turn"
+  },
+  {
+    "scenario_id": "adv-high-risk-negative-hypertension-029",
+    "persona": {
+      "persona_id": "synthetic-high-risk-glucose-029",
+      "primary_bucket": "high_risk",
+      "gender": "女",
+      "age": 58,
+      "checkup_metrics": {
+        "fasting_glucose_mmol_l": 12.0,
+        "systolic_blood_pressure_mm_hg": 121,
+        "diastolic_blood_pressure_mm_hg": 78,
+        "total_cholesterol_mmol_l": 4.6
+      },
+      "special_groups": ["高血糖"],
+      "allergens": [],
+      "health_goals": ["控糖"]
+    },
+    "messages": ["我没有高血压；健康情况是高血糖；饮食目标是控糖；血压121/78、空腹血糖12.0。请不要误加高血压标签，先说明风险并问清治疗情况，再给四道菜。"],
+    "expectation": {"dish_count": 4, "clarification_required": true},
+    "seed": 91029,
+    "intent": "negative_health_expression",
+    "dialogue_mode": "single_turn"
+  },
+  {
+    "scenario_id": "adv-high-risk-multi-person-nutrition-conflict-030",
+    "persona": {
+      "persona_id": "synthetic-high-risk-renal-030",
+      "primary_bucket": "high_risk",
+      "gender": "男",
+      "age": 68,
+      "checkup_metrics": {
+        "fasting_glucose_mmol_l": 8.7,
+        "systolic_blood_pressure_mm_hg": 169,
+        "diastolic_blood_pressure_mm_hg": 103,
+        "uric_acid_umol_l": 590
+      },
+      "special_groups": ["高血压", "高血糖", "高尿酸", "肾功能异常"],
+      "allergens": ["海鲜"],
+      "health_goals": ["降压", "控糖", "降尿酸", "护肾"]
+    },
+    "messages": ["健康情况是高血压、高血糖、高尿酸、肾功能异常；我对海鲜过敏；饮食目标是降压、控糖、降尿酸、护肾；尿酸590、血压169/103。家人却要求高蛋白海鲜餐。六道菜先澄清是否分餐和医嘱，不能用海鲜折中。"],
+    "expectation": {
+      "dish_count": 6,
+      "forbidden_terms": ["海鲜"],
+      "clarification_required": true
+    },
+    "seed": 91030,
+    "intent": "multi_person_conflict",
+    "dialogue_mode": "single_turn"
+  }
+]

@@ -16,12 +16,12 @@ TASTE_KEYWORDS = {
 
 HEALTH_KEYWORDS = {
     "减脂": ["减脂", "减肥", "低脂", "控制体重"],
-    "增肌": ["增肌", "蛋白", "高蛋白"],
+    "增肌": ["增肌", "高蛋白"],
     "补钙": ["补钙"],
     "补铁": ["补铁", "补气血", "气血"],
-    "控糖": ["控糖", "血糖", "少糖"],
-    "降压": ["降压", "血压", "高血压"],
-    "降尿酸": ["尿酸", "痛风"],
+    "控糖": ["控糖", "少糖"],
+    "降压": ["降压"],
+    "降尿酸": ["降尿酸"],
     "健胃消食": ["胃口不好", "养胃", "健胃", "消食"],
 }
 
@@ -60,15 +60,112 @@ ALLERGEN_PATTERNS = [
 ]
 
 SPECIAL_GROUP_KEYWORDS = {
-    "高血压": ["高血压", "血压高", "降血压", "降压"],
-    "高血糖": ["高血糖", "血糖高", "控糖", "糖尿病"],
-    "高尿酸": ["高尿酸", "尿酸高", "痛风", "降尿酸"],
+    "高血压": ["高血压", "血压高"],
+    "高血糖": ["高血糖", "血糖高", "糖尿病"],
+    "高尿酸": ["高尿酸", "尿酸高", "痛风"],
+    "高血脂": ["高血脂", "血脂高"],
+    "肾功能异常": ["肾功能异常"],
     "孕妇": ["孕妇", "怀孕", "孕期"],
     "备孕": ["备孕"],
     "哺乳期": ["哺乳", "哺乳期"],
     "老人": ["老人", "老年", "爸妈", "父母"],
-    "儿童": ["儿童", "小孩", "孩子"],
+    "儿童": ["儿童"],
 }
+
+_LIST_SEPARATOR = re.compile(r"[、，,/]|(?:和|及)")
+_NEGATION_SCOPE = re.compile(
+    r"(?:没有|不是|并非|不属于|未患|无|不算|不需要|不要)"
+    r"(?:患有|得了|被诊断出|被诊断为|诊断出|诊断为|有|需要|"
+    r"误加|添加|标记|认为|当作)?"
+    r"[^；;。\n]{0,40}$"
+)
+_DISCLOSURE_FOLLOWUP = (
+    r"(?:最近|目前|平时|同时|另外|并且|需要|想|请|空腹|血压|体检|口味|"
+    r"年龄|预算|晚餐|午餐|早餐|推荐|安排|但|不过|然后|"
+    r"(?:饮食)?目标(?:是|为))"
+)
+_EXPLICIT_HEALTH_PATTERN = re.compile(
+    r"(?:我目前的|我的|目前的)?健康情况(?:是|为)\s*(.+?)"
+    rf"(?=；|;|。|\n|\s+(?=(?:饮食)?目标(?:是|为))|"
+    rf"，(?={_DISCLOSURE_FOLLOWUP})|$)"
+)
+_EXPLICIT_GOAL_PATTERN = re.compile(
+    r"(?:饮食)?目标(?:是|为)\s*(.+?)"
+    rf"(?=；|;|。|\n|，(?={_DISCLOSURE_FOLLOWUP})|$)"
+)
+_ADDITIVE_DISCLOSURE_MARKERS = ("另外", "再加", "补充", "同时", "还有", "并且")
+_NARRATIVE_ITEM_PREFIXES = (
+    "最近",
+    "目前",
+    "平时",
+    "年龄",
+    "预算",
+    "晚餐",
+    "午餐",
+    "早餐",
+    "推荐",
+    "安排",
+    "请",
+    "需要",
+    "想",
+    "口味",
+    "体检",
+    "空腹",
+)
+_CONTRAST_BOUNDARY = re.compile(r"(?:但是|但|不过(?!敏)|然而|而是|后来)")
+_DISH_INCREMENT_PATTERN = re.compile(
+    r"(?:再|另外|只)?(?:多)?加\s*([一二两三四五六七八九十\d]+)\s*道"
+    r"(素菜|荤菜|菜)?"
+)
+_DISH_ABSOLUTE_PATTERN = re.compile(
+    r"(?:"
+    r"(?:推荐|安排|来|做|给我|改成|想要|吃|先给|先来)\s*"
+    r"([一二两三四五六七八九十\d]+)\s*道(?:菜|餐|饭)?"
+    r"|"
+    r"([一二两三四五六七八九十\d]+)\s*道"
+    r"(?:菜|餐|饭|[\u4e00-\u9fa5]{1,10}菜)"
+    r")"
+)
+_DISH_REFERENCE_SUFFIX = re.compile(
+    r"(?:其他|其余|剩余|原来(?:的)?|保留的?|未影响的?|混成|合成|"
+    r"前|后|这|那|上述|第)\s*$"
+)
+_STRUCTURE_COMPOSITION_PATTERN = re.compile(
+    r"([一二两三四五六七八九十\d]+)\s*荤\s*"
+    r"([一二两三四五六七八九十\d]+)\s*素"
+)
+_STRUCTURE_RATIO_PATTERN = re.compile(
+    r"荤素(?:比例)?(?:按|为|是)?\s*([一二两三四五六七八九十\d]+)\s*"
+    r"(?:比|[:：])\s*([一二两三四五六七八九十\d]+)"
+)
+_COOKING_METHOD_MINIMUM_PATTERN = re.compile(
+    r"至少[^；;。\n]{0,24}?([一二两三四五六七八九十\d]+)\s*种"
+    r"(?:不同)?(?:做法|烹饪方式|烹饪方法)"
+)
+_CLARIFICATION_MARKERS = (
+    "还需确认",
+    "需要确认",
+    "请先确认",
+    "先确认",
+    "请先澄清",
+    "先澄清",
+    "先问清",
+    "问清",
+    "询问",
+    "没想好",
+    "这份菜单调整一下",
+    "要求不同",
+    "约束不同",
+    "服务谁",
+    "优先级",
+    "医嘱",
+    "用药",
+    "医疗边界",
+    "肉菜太多",
+    "多来几个素菜",
+    "少整点荤",
+    "吃啥",
+)
 
 
 def _contains_any(text: str, words: list[str]) -> bool:
@@ -81,6 +178,246 @@ def _dedupe(values: list[str]) -> list[str]:
         if value and value not in result:
             result.append(value)
     return result
+
+
+def _split_disclosed_values(value: str) -> list[str]:
+    values: list[str] = []
+    for item in _LIST_SEPARATOR.split(value):
+        cleaned = item.strip(" ：:，,。；;\t")
+        if not cleaned:
+            continue
+        if cleaned.startswith(_NARRATIVE_ITEM_PREFIXES):
+            break
+        if re.search(r"\d+(?:岁|元|分钟|道菜|mmol|mmHg)", cleaned, re.IGNORECASE):
+            break
+        values.append(cleaned)
+    return _dedupe(values)
+
+
+def _split_ingredient_values(value: str) -> list[str]:
+    return _dedupe(
+        [
+            item.strip()
+            for item in re.split(r"(?:以及|和|及|与|、)", value)
+            if item.strip()
+        ]
+    )
+
+
+def _extract_disclosed_values(text: str, pattern: re.Pattern[str]) -> list[str]:
+    matches = list(pattern.finditer(text))
+    values: list[str] = []
+    for match in matches:
+        disclosed = _split_disclosed_values(match.group(1))
+        prefix = text[max(0, match.start() - 12):match.start()]
+        if not values or any(
+            marker in prefix for marker in _ADDITIVE_DISCLOSURE_MARKERS
+        ):
+            values.extend(disclosed)
+            values = _dedupe(values)
+        else:
+            values = disclosed
+    return values
+
+
+def _contains_non_negated(text: str, keyword: str) -> bool:
+    for match in re.finditer(re.escape(keyword), text):
+        sentence_start = max(
+            text.rfind(separator, 0, match.start())
+            for separator in ("；", ";", "。", "\n")
+        )
+        prefix = text[sentence_start + 1:match.start()]
+        contrasts = list(_CONTRAST_BOUNDARY.finditer(prefix))
+        if contrasts:
+            prefix = prefix[contrasts[-1].end():]
+        if not _NEGATION_SCOPE.search(prefix):
+            return True
+    return False
+
+
+def _extract_allergens(text: str) -> list[str]:
+    allergens: list[str] = []
+    clauses = re.split(
+        r"[，,；;。\n]|(?:但是|但|不过(?!敏)|然而|而是)",
+        text,
+    )
+    for clause in clauses:
+        clause = clause.strip()
+        if not clause or any(
+            phrase in clause
+            for phrase in ("没有已知食物过敏", "没有食物过敏", "无食物过敏")
+        ):
+            continue
+
+        accepted_positive = False
+        positive_matches = list(re.finditer(r"(?<!不)对(.+?)过敏", clause))
+        for match in positive_matches:
+            raw = match.group(1)
+            if re.search(r"不(?:太)?$", raw):
+                continue
+            raw = re.sub(r"^(?:我|本人)?对?", "", raw).strip()
+            allergens.extend(_split_disclosed_values(raw))
+            accepted_positive = True
+
+        if not accepted_positive and not positive_matches and clause.endswith("过敏"):
+            raw_direct = clause[:-2]
+            raw_direct = re.split(r"(?:并且|且)", raw_direct)[-1]
+            raw_direct = re.sub(r"^(?:我|本人)?对?", "", raw_direct).strip()
+            if raw_direct and not any(
+                marker in raw_direct
+                for marker in ("不对", "没有", "并非", "不是", "无")
+            ) and not re.search(r"不(?:太)?$", raw_direct):
+                allergens.extend(_split_disclosed_values(raw_direct))
+
+        for allergen in ALLERGEN_PATTERNS:
+            if f"不能吃{allergen}" in clause or f"不吃{allergen}" in clause:
+                allergens.append(allergen)
+    return _dedupe(allergens)
+
+
+def _extract_requested_dish_count(text: str) -> int | None:
+    increments = list(_DISH_INCREMENT_PATTERN.finditer(text))
+    increment_spans = [(match.start(), match.end()) for match in increments]
+    events: list[tuple[int, str, int | None]] = [
+        (match.start(), "increment", _parse_chinese_number(match.group(1)))
+        for match in increments
+    ]
+    for match in _DISH_ABSOLUTE_PATTERN.finditer(text):
+        if any(start <= match.start() < end for start, end in increment_spans):
+            continue
+        prefix = text[max(0, match.start() - 10):match.start()]
+        if _DISH_REFERENCE_SUFFIX.search(prefix):
+            continue
+        value = match.group(1) or match.group(2)
+        events.append(
+            (match.start(), "absolute", _parse_chinese_number(value))
+        )
+
+    requested: int | None = None
+    for _, event_type, value in sorted(events):
+        if value is None:
+            continue
+        if event_type == "absolute":
+            requested = value
+        elif requested is not None:
+            requested += value
+    return requested
+
+
+def _scaled_structure_counts(
+    meat: int,
+    vegetable: int,
+    dish_count: int | None,
+) -> tuple[int, int]:
+    total = meat + vegetable
+    if dish_count and total > 0 and dish_count % total == 0:
+        multiplier = dish_count // total
+        return meat * multiplier, vegetable * multiplier
+    return meat, vegetable
+
+
+def _extract_structure_counts(
+    text: str,
+    dish_count: int | None,
+) -> tuple[int | None, int | None]:
+    structure_matches = [
+        *[(match.start(), match) for match in _STRUCTURE_COMPOSITION_PATTERN.finditer(text)],
+        *[(match.start(), match) for match in _STRUCTURE_RATIO_PATTERN.finditer(text)],
+    ]
+    if not structure_matches:
+        return None, None
+
+    _, match = max(structure_matches, key=lambda item: item[0])
+    meat = _parse_chinese_number(match.group(1))
+    vegetable = _parse_chinese_number(match.group(2))
+    if meat is None or vegetable is None:
+        return None, None
+
+    increment_matches = list(_DISH_INCREMENT_PATTERN.finditer(text, match.end()))
+    increment_spans = [(item.start(), item.end()) for item in increment_matches]
+    reset_position = match.end()
+    for absolute in _DISH_ABSOLUTE_PATTERN.finditer(text, match.end()):
+        if any(start <= absolute.start() < end for start, end in increment_spans):
+            continue
+        prefix = text[max(match.end(), absolute.start() - 10):absolute.start()]
+        if _DISH_REFERENCE_SUFFIX.search(prefix):
+            continue
+        reset_position = max(reset_position, absolute.end())
+
+    later_increments: list[tuple[int, str]] = []
+    for increment in increment_matches:
+        if increment.start() < reset_position:
+            continue
+        value = _parse_chinese_number(increment.group(1))
+        category = increment.group(2)
+        if value is not None and category in {"荤菜", "素菜"}:
+            later_increments.append((value, category))
+
+    base_dish_count = dish_count
+    if base_dish_count is not None:
+        base_dish_count -= sum(value for value, _ in later_increments)
+    meat, vegetable = _scaled_structure_counts(meat, vegetable, base_dish_count)
+    for value, category in later_increments:
+        if category == "荤菜":
+            meat += value
+        else:
+            vegetable += value
+    return meat, vegetable
+
+
+def _extract_minimum_cooking_methods(text: str) -> int | None:
+    matches = list(_COOKING_METHOD_MINIMUM_PATTERN.finditer(text))
+    if not matches:
+        return None
+    return _parse_chinese_number(matches[-1].group(1))
+
+
+def _requires_clarification(
+    text: str,
+    dish_count: int | None,
+    meat_count: int | None,
+    vegetable_count: int | None,
+) -> bool:
+    if any(marker in text for marker in _CLARIFICATION_MARKERS):
+        return True
+    blood_pressure = re.search(
+        r"(?:血压|收缩压)[^，,。；;\n\d]{0,8}(\d{2,3})\s*/\s*(\d{2,3})",
+        text,
+    )
+    if blood_pressure and (
+        int(blood_pressure.group(1)) >= 160
+        or int(blood_pressure.group(2)) >= 100
+    ):
+        return True
+    glucose = re.search(
+        r"(?:空腹)?血糖(?:为|是)?\s*(\d+(?:\.\d+)?)",
+        text,
+    )
+    if glucose and float(glucose.group(1)) >= 9.0:
+        return True
+    if re.search(
+        r"(?:素菜|荤菜|肉菜)[^，,。；;\n]{0,8}(?:多|少)(?:一?点|一些|些|几个)?",
+        text,
+    ):
+        return True
+    if (
+        text.count("一个人") >= 2
+        and re.search(r"(?:想吃|喜欢|爱吃)[^，,。；;\n]{0,4}辣", text)
+        and re.search(
+            r"(?:不想|不吃|不能|不碰|不喜欢)[^，,。；;\n]{0,6}辣"
+            r"|辣[^，,。；;\n]{0,8}(?:不想碰|不能碰|不碰)",
+            text,
+        )
+    ):
+        return True
+    if (
+        dish_count is not None
+        and meat_count is not None
+        and vegetable_count is not None
+        and meat_count + vegetable_count != dish_count
+    ):
+        return True
+    return False
 
 
 def extract_constraints(messages: list[str], user: UserProfile | None = None) -> Constraints:
@@ -110,9 +447,27 @@ def extract_constraints(messages: list[str], user: UserProfile | None = None) ->
     elif "一家四口" in text:
         constraints.people_count = 4
 
-    dish_count_match = re.search(r"(?:推荐|安排|来|做|给我)?\s*([一二两三四五六七八九十\d]+)\s*道(?:菜|餐|饭)?", text)
-    if dish_count_match:
-        constraints.requested_dish_count = _parse_chinese_number(dish_count_match.group(1))
+    constraints.requested_dish_count = _extract_requested_dish_count(text)
+    (
+        constraints.requested_meat_count,
+        constraints.requested_vegetable_count,
+    ) = _extract_structure_counts(text, constraints.requested_dish_count)
+    if (
+        constraints.requested_dish_count is None
+        and constraints.requested_meat_count is not None
+        and constraints.requested_vegetable_count is not None
+    ):
+        constraints.requested_dish_count = (
+            constraints.requested_meat_count
+            + constraints.requested_vegetable_count
+        )
+    constraints.minimum_cooking_methods = _extract_minimum_cooking_methods(text)
+    constraints.clarification_required = _requires_clarification(
+        text,
+        constraints.requested_dish_count,
+        constraints.requested_meat_count,
+        constraints.requested_vegetable_count,
+    )
 
     constraints.avoid_tastes.extend(_extract_avoid_tastes(text))
 
@@ -129,16 +484,24 @@ def extract_constraints(messages: list[str], user: UserProfile | None = None) ->
     if "甜" in constraints.avoid_tastes and constraints.taste in ("甜", "酸甜"):
         constraints.taste = None
 
-    for goal, keywords in HEALTH_KEYWORDS.items():
-        if _contains_any(text, keywords):
-            constraints.health_goals.append(goal)
-
     for ingredient in INGREDIENT_KEYWORDS:
         if ingredient in text:
             constraints.preferred_ingredients.append(ingredient)
 
-    for match in re.finditer(r"(?:不|别)(?:喜欢吃|爱吃|想吃|要吃|吃|要)([\u4e00-\u9fa5]{1,8})", text):
-        constraints.avoid_ingredients.append(match.group(1))
+    for match in re.finditer(
+        r"(?:不要|别)(?:放|加|用)([\u4e00-\u9fa5、]{1,20})",
+        text,
+    ):
+        constraints.avoid_ingredients.extend(_split_ingredient_values(match.group(1)))
+
+    for match in re.finditer(r"(?:不|别)(?:喜欢吃|爱吃|想吃|要吃|吃|要)([\u4e00-\u9fa5、]{1,20})", text):
+        for ingredient in _split_ingredient_values(match.group(1)):
+            if ingredient.startswith(("放", "加", "用")):
+                ingredient = ingredient[1:]
+            constraints.avoid_ingredients.append(ingredient)
+
+    if re.search(r"(?:避免|不要|别)[^，,。；;\n]{0,12}(?:额外|添加)?糖", text):
+        constraints.avoid_ingredients.append("糖")
 
     minutes_match = re.search(r"(\d+)\s*分钟", text)
     if minutes_match:
@@ -202,9 +565,13 @@ def infer_profile_from_text(text: str) -> dict:
     elif any(word in text for word in ["久坐", "办公室", "不怎么运动", "劳动强度低"]):
         profile["labor_intensity"] = "低"
 
-    for group, keywords in SPECIAL_GROUP_KEYWORDS.items():
-        if _contains_any(text, keywords):
-            profile["special_groups"].append(group)
+    disclosed_groups = _extract_disclosed_values(text, _EXPLICIT_HEALTH_PATTERN)
+    if disclosed_groups:
+        profile["special_groups"].extend(disclosed_groups)
+    else:
+        for group, keywords in SPECIAL_GROUP_KEYWORDS.items():
+            if any(_contains_non_negated(text, keyword) for keyword in keywords):
+                profile["special_groups"].append(group)
 
     avoid_tastes = _extract_avoid_tastes(text)
     for taste, keywords in TASTE_KEYWORDS.items():
@@ -215,18 +582,15 @@ def infer_profile_from_text(text: str) -> dict:
         if _contains_any(text, keywords):
             profile["taste_preference"] = taste
 
-    for goal, keywords in HEALTH_KEYWORDS.items():
-        if _contains_any(text, keywords):
-            profile["health_goals"].append(goal)
+    disclosed_goals = _extract_disclosed_values(text, _EXPLICIT_GOAL_PATTERN)
+    if disclosed_goals:
+        profile["health_goals"].extend(disclosed_goals)
+    else:
+        for goal, keywords in HEALTH_KEYWORDS.items():
+            if any(_contains_non_negated(text, keyword) for keyword in keywords):
+                profile["health_goals"].append(goal)
 
-    for allergen in ALLERGEN_PATTERNS:
-        if (
-            f"对{allergen}过敏" in text
-            or f"{allergen}过敏" in text
-            or f"不能吃{allergen}" in text
-            or f"不吃{allergen}" in text
-        ):
-            profile["allergens"].append(allergen)
+    profile["allergens"].extend(_extract_allergens(text))
 
     profile["special_groups"] = _dedupe(profile["special_groups"])
     profile["allergens"] = _dedupe(expand_terms(profile["allergens"]))
