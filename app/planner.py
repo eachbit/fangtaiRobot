@@ -1,19 +1,28 @@
 from __future__ import annotations
 
+from .health_rules import check_recipe
 from .models import Constraints, Recipe, UserProfile
-from .recipe_features import classify_recipe
-from .retriever import rank_recipes
+from .nutrition import estimate_menu_nutrition
+from .recipe_features import classify_recipe, is_bad_breakfast
+from .retriever import rank_recipes, score_recipe
 
 
-def plan_meal(recipes: list[Recipe], constraints: Constraints, user: UserProfile | None) -> dict:
-    ranked = rank_recipes(recipes, constraints, user)
+def plan_meal(
+    recipes: list[Recipe],
+    constraints: Constraints,
+    user: UserProfile | None,
+    previous_menu_ids: list[int] | None = None,
+) -> dict:
+    ranked = rank_recipes(recipes, constraints, user, limit=48)
     menu_size = _menu_size(constraints)
-    selected = _diverse_select(ranked, menu_size)
+    selected = _revision_select(recipes, ranked, constraints, user, menu_size, previous_menu_ids)
+    changes = _build_changes(previous_menu_ids, selected)
     warnings = _collect_warnings(selected)
 
     if not selected and recipes:
         fallback_ranked = rank_recipes(recipes, constraints, user, limit=5)
         selected = fallback_ranked[:1]
+        changes = _build_changes(previous_menu_ids, selected)
         warnings.append("未找到完全理想方案，已返回最接近的官方菜谱。")
 
     menu = []
@@ -31,12 +40,92 @@ def plan_meal(recipes: list[Recipe], constraints: Constraints, user: UserProfile
             }
         )
 
-    score_card = build_score_card(menu, constraints, selected)
+    nutrition = estimate_menu_nutrition(menu, constraints)
+    score_card = build_score_card(menu, constraints, selected, changes, nutrition)
     return {
         "menu": menu,
+        "nutrition": nutrition,
         "score_card": score_card,
+        "changes": changes,
         "warnings": warnings,
         "answer": build_answer(menu, constraints, warnings),
+    }
+
+
+def _revision_select(
+    recipes: list[Recipe],
+    ranked: list[dict],
+    constraints: Constraints,
+    user: UserProfile | None,
+    size: int,
+    previous_menu_ids: list[int] | None,
+) -> list[dict]:
+    if not previous_menu_ids:
+        return _diverse_select(ranked, size)
+
+    by_id = {recipe.id: recipe for recipe in recipes}
+    selected: list[dict] = []
+    used_names: set[str] = set()
+    for recipe_id in previous_menu_ids:
+        recipe = by_id.get(recipe_id)
+        if not recipe or recipe.name in used_names:
+            continue
+        item = _existing_item_if_allowed(recipe, constraints, user)
+        if item is None:
+            continue
+        selected.append(item)
+        used_names.add(recipe.name)
+        if len(selected) >= size:
+            return selected[:size]
+
+    if len(selected) >= size:
+        return selected[:size]
+
+    remaining = [item for item in ranked if item["recipe"].name not in used_names]
+    selected.extend(_diverse_select(remaining, size - len(selected)))
+    return selected[:size]
+
+
+def _existing_item_if_allowed(recipe: Recipe, constraints: Constraints, user: UserProfile | None) -> dict | None:
+    health = check_recipe(recipe, constraints, user)
+    if not health["passed"]:
+        return None
+    if constraints.meal == "早餐" and is_bad_breakfast(recipe):
+        return None
+    score, reasons = score_recipe(recipe, constraints)
+    if not reasons:
+        reasons = ["保留上一轮已确认菜品"]
+    return {
+        "recipe": recipe,
+        "score": max(score, 1),
+        "reasons": reasons,
+        "warnings": health["warnings"],
+    }
+
+
+def _build_changes(previous_menu_ids: list[int] | None, selected: list[dict]) -> dict:
+    selected_ids = [item["recipe"].id for item in selected]
+    if not previous_menu_ids:
+        return {
+            "mode": "new_menu",
+            "kept_dishes": [],
+            "replaced_dishes": [],
+            "change_count": len(selected_ids),
+        }
+    kept = [recipe_id for recipe_id in previous_menu_ids if recipe_id in selected_ids]
+    removed = [recipe_id for recipe_id in previous_menu_ids if recipe_id not in selected_ids]
+    added = [recipe_id for recipe_id in selected_ids if recipe_id not in previous_menu_ids]
+    replaced = [
+        {"old_id": old_id, "new_id": new_id}
+        for old_id, new_id in zip(removed, added)
+    ]
+    for new_id in added[len(replaced):]:
+        replaced.append({"old_id": None, "new_id": new_id})
+    return {
+        "mode": "minimal_revision",
+        "kept_dishes": kept,
+        "replaced_dishes": replaced,
+        "change_count": len(removed) + max(0, len(added) - len(removed)),
     }
 
 
@@ -118,7 +207,13 @@ def _collect_warnings(selected: list[dict]) -> list[str]:
     return warnings
 
 
-def build_score_card(menu: list[dict], constraints: Constraints, selected: list[dict]) -> dict:
+def build_score_card(
+    menu: list[dict],
+    constraints: Constraints,
+    selected: list[dict],
+    changes: dict | None = None,
+    nutrition: dict | None = None,
+) -> dict:
     total = len(menu)
     health_hits = sum(1 for item in selected if any("健康需求" in reason for reason in item["reasons"]))
     taste_hits = sum(1 for item in selected if any("口味" in reason or "清淡" in reason for reason in item["reasons"]))
@@ -133,7 +228,8 @@ def build_score_card(menu: list[dict], constraints: Constraints, selected: list[
         "health_match": _level(health_hits, total) if constraints.health_goals else "not_required",
         "taste_match": _level(taste_hits, total) if constraints.taste else "not_required",
         "scenario_match": _level(scenario_hits, total),
-        "minimal_change": True,
+        "minimal_change": (changes or {}).get("change_count", 0) <= 1,
+        "nutrition_balance": (nutrition or {}).get("balance_level", "low"),
         "menu_count": total,
     }
 

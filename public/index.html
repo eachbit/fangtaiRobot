@@ -53,8 +53,40 @@
       <section class="panel">
         <h2>约束评分卡</h2>
         <div id="scoreCard" class="score-grid"></div>
+        <h3>营养估算</h3>
+        <div id="nutritionSummary" class="nutrition-summary"></div>
         <h3>风险提示</h3>
         <ul id="warnings"></ul>
+      </section>
+
+      <section class="panel audit-panel">
+        <div class="panel-title-row">
+          <div>
+            <h2>后台评测控制台</h2>
+            <p>自动运行竞赛验收场景，记录询问、回答、错误和耗时。</p>
+          </div>
+          <div class="audit-actions">
+            <button id="auditStartBtn">启动评测</button>
+            <button id="auditCancelBtn" class="secondary" disabled>取消任务</button>
+            <button id="auditRefreshBtn" class="secondary">刷新</button>
+          </div>
+        </div>
+
+        <div class="audit-overview" id="auditOverview"></div>
+        <div class="progress-track">
+          <div id="auditProgressBar" class="progress-bar"></div>
+        </div>
+
+        <div class="audit-grid">
+          <div>
+            <h3>历史任务</h3>
+            <div id="auditJobs" class="job-list"></div>
+          </div>
+          <div>
+            <h3>场景详情</h3>
+            <div id="auditRecords" class="audit-records"></div>
+          </div>
+        </div>
       </section>
     </main>
 

@@ -7,6 +7,8 @@
   --line: #d9dee7;
   --accent: #2f7d5c;
   --accent-dark: #245f47;
+  --good: #1f8a5b;
+  --bad: #b42318;
   --warn: #9d4f12;
 }
 
@@ -128,6 +130,20 @@ button:hover {
   background: var(--accent-dark);
 }
 
+button.secondary {
+  background: #eef2f6;
+  color: #334155;
+}
+
+button.secondary:hover {
+  background: #dfe6ee;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 .profile,
 .answer {
   margin-bottom: 14px;
@@ -204,6 +220,195 @@ ul {
   color: var(--warn);
 }
 
+.muted {
+  color: var(--muted);
+}
+
+.nutrition-summary,
+.audit-overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.nutrition-summary div,
+.audit-stat {
+  min-height: 64px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfd;
+}
+
+.nutrition-summary strong,
+.audit-stat strong {
+  display: block;
+  font-size: 18px;
+}
+
+.nutrition-summary span,
+.audit-stat span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.audit-panel {
+  grid-column: 1 / -1;
+}
+
+.panel-title-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+.panel-title-row p {
+  margin-top: 6px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.audit-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(92px, 1fr));
+  gap: 8px;
+  min-width: 320px;
+}
+
+.audit-actions button {
+  margin-top: 0;
+}
+
+.audit-stat.pass strong {
+  color: var(--good);
+}
+
+.audit-stat.fail strong {
+  color: var(--bad);
+}
+
+.progress-track {
+  overflow: hidden;
+  height: 8px;
+  margin: 14px 0 18px;
+  border-radius: 999px;
+  background: #e7edf3;
+}
+
+.progress-bar {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 160ms ease;
+}
+
+.audit-grid {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 16px;
+}
+
+.job-list,
+.audit-records {
+  display: grid;
+  gap: 10px;
+}
+
+.job-item {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  margin-top: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  text-align: left;
+}
+
+.job-item.active {
+  border-color: var(--accent);
+  background: #edf7f2;
+}
+
+.job-item span,
+.job-item small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.audit-record {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--good);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.audit-record.failed {
+  border-left-color: var(--bad);
+}
+
+.audit-record header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.audit-record header span {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.audit-dialog {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.audit-dialog p,
+.audit-answer {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #f5f7fa;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.audit-answer {
+  margin-top: 8px;
+  color: var(--text);
+}
+
+.audit-record details {
+  margin-top: 10px;
+}
+
+.audit-record summary {
+  cursor: pointer;
+  color: var(--accent-dark);
+}
+
+.audit-record pre {
+  min-height: 0;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.audit-empty {
+  padding: 14px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  background: #fbfcfd;
+}
+
 @media (max-width: 1100px) {
   .layout {
     grid-template-columns: 1fr;
@@ -216,5 +421,18 @@ ul {
   .app-header {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .panel-title-row,
+  .audit-record header {
+    flex-direction: column;
+  }
+
+  .audit-actions,
+  .audit-grid,
+  .audit-overview,
+  .nutrition-summary {
+    grid-template-columns: 1fr;
+    min-width: 0;
   }
 }

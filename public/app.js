@@ -1,6 +1,9 @@
 const state = {
   users: [],
   cases: [],
+  sessionId: null,
+  auditJobId: null,
+  auditPollTimer: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -25,6 +28,7 @@ async function init() {
   renderUsers();
   renderCases();
   bindEvents();
+  await loadAuditJobs();
 }
 
 function renderUsers() {
@@ -45,8 +49,12 @@ function renderCases() {
 }
 
 function bindEvents() {
-  $("userSelect").addEventListener("change", renderProfile);
+  $("userSelect").addEventListener("change", () => {
+    state.sessionId = null;
+    renderProfile();
+  });
   $("caseSelect").addEventListener("change", () => {
+    state.sessionId = null;
     const id = Number($("caseSelect").value);
     const item = state.cases.find((caseItem) => caseItem.id === id);
     if (item) {
@@ -54,6 +62,9 @@ function bindEvents() {
     }
   });
   $("recommendBtn").addEventListener("click", recommend);
+  $("auditStartBtn").addEventListener("click", startAuditJob);
+  $("auditCancelBtn").addEventListener("click", cancelAuditJob);
+  $("auditRefreshBtn").addEventListener("click", loadAuditJobs);
 }
 
 function renderProfile() {
@@ -94,6 +105,7 @@ async function recommend() {
       method: "POST",
       body: JSON.stringify({
         user_id: $("userSelect").value ? Number($("userSelect").value) : null,
+        session_id: state.sessionId,
         messages,
       }),
     });
@@ -107,15 +119,161 @@ async function recommend() {
 }
 
 function renderResult(result) {
+  state.sessionId = result.session_id || state.sessionId;
   $("answer").textContent = result.answer || "";
   $("constraints").textContent = JSON.stringify(result.constraints, null, 2);
   $("menu").innerHTML = result.menu.map(renderRecipe).join("");
   $("scoreCard").innerHTML = Object.entries(result.score_card)
     .map(([key, value]) => `<div class="score-item"><strong>${labelOf(key)}</strong><br>${value}</div>`)
     .join("");
+  renderNutrition(result.nutrition);
   $("warnings").innerHTML = result.warnings.length
     ? result.warnings.map((warning) => `<li>${warning}</li>`).join("")
     : "<li>无硬性风险提示</li>";
+}
+
+function renderNutrition(nutrition) {
+  if (!nutrition) {
+    $("nutritionSummary").innerHTML = "<span class=\"muted\">暂无营养估算</span>";
+    return;
+  }
+  $("nutritionSummary").innerHTML = `
+    <div><strong>${nutrition.table.dish_count}</strong><span>道菜</span></div>
+    <div><strong>${nutrition.table.people_count}</strong><span>人用餐</span></div>
+    <div><strong>${nutrition.per_person.kcal}</strong><span>kcal/人</span></div>
+    <div><strong>${nutrition.confidence.level}</strong><span>可信度</span></div>
+  `;
+}
+
+async function startAuditJob() {
+  setAuditButtons(true);
+  try {
+    const job = await api("/api/audit/jobs", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    state.auditJobId = job.job_id;
+    renderAuditJob(job);
+    pollAuditJob();
+  } catch (error) {
+    alert(`启动评测失败：${error.message}`);
+    setAuditButtons(false);
+  }
+}
+
+async function cancelAuditJob() {
+  if (!state.auditJobId) return;
+  try {
+    const job = await api(`/api/audit/jobs/${state.auditJobId}/cancel`, { method: "POST", body: "{}" });
+    renderAuditJob(job);
+  } catch (error) {
+    alert(`取消失败：${error.message}`);
+  }
+}
+
+async function loadAuditJobs() {
+  try {
+    const payload = await api("/api/audit/jobs");
+    renderAuditJobs(payload.jobs || []);
+    if (!state.auditJobId && payload.jobs && payload.jobs.length) {
+      state.auditJobId = payload.jobs[0].job_id;
+      const job = await api(`/api/audit/jobs/${state.auditJobId}`);
+      renderAuditJob(job);
+    }
+  } catch (error) {
+    $("auditOverview").innerHTML = `<div class="audit-empty">评测控制台暂不可用：${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function pollAuditJob() {
+  clearAuditPoll();
+  if (!state.auditJobId) return;
+  state.auditPollTimer = window.setInterval(async () => {
+    try {
+      const job = await api(`/api/audit/jobs/${state.auditJobId}`);
+      renderAuditJob(job);
+      if (!["queued", "running", "canceling"].includes(job.status)) {
+        clearAuditPoll();
+        setAuditButtons(false);
+        loadAuditJobs();
+      }
+    } catch (error) {
+      clearAuditPoll();
+      setAuditButtons(false);
+      $("auditOverview").innerHTML = `<div class="audit-empty">轮询失败：${escapeHtml(error.message)}</div>`;
+    }
+  }, 500);
+}
+
+function renderAuditJob(job) {
+  const total = job.progress.total || 0;
+  const completed = job.progress.completed || 0;
+  const percent = total ? Math.round((completed / total) * 100) : 0;
+  $("auditProgressBar").style.width = `${percent}%`;
+  $("auditOverview").innerHTML = `
+    <div class="audit-stat"><strong>${statusText(job.status)}</strong><span>任务状态</span></div>
+    <div class="audit-stat"><strong>${completed}/${total}</strong><span>进度</span></div>
+    <div class="audit-stat pass"><strong>${job.summary.passed}</strong><span>通过</span></div>
+    <div class="audit-stat fail"><strong>${job.summary.failed}</strong><span>失败</span></div>
+    <div class="audit-stat"><strong>${job.summary.duration_ms}ms</strong><span>耗时</span></div>
+  `;
+  $("auditRecords").innerHTML = job.records && job.records.length
+    ? job.records.map(renderAuditRecord).join("")
+    : "<div class=\"audit-empty\">任务运行后会在这里显示每个场景的询问、回答和查错结果。</div>";
+  setAuditButtons(["queued", "running", "canceling"].includes(job.status));
+}
+
+function renderAuditJobs(jobs) {
+  $("auditJobs").innerHTML = jobs.length
+    ? jobs.map((job) => `
+      <button class="job-item ${job.job_id === state.auditJobId ? "active" : ""}" onclick="selectAuditJob('${job.job_id}')">
+        <span>${statusText(job.status)}</span>
+        <strong>${job.summary.passed}/${job.summary.total} 通过</strong>
+        <small>${new Date(job.created_at * 1000).toLocaleTimeString()}</small>
+      </button>
+    `).join("")
+    : "<div class=\"audit-empty\">暂无后台评测任务</div>";
+}
+
+async function selectAuditJob(jobId) {
+  state.auditJobId = jobId;
+  const job = await api(`/api/audit/jobs/${jobId}`);
+  renderAuditJob(job);
+  loadAuditJobs();
+}
+
+function renderAuditRecord(record) {
+  const issues = record.issues.length
+    ? record.issues.map((issue) => `<li>${escapeHtml(issue)}</li>`).join("")
+    : "<li>未发现硬性问题</li>";
+  return `
+    <article class="audit-record ${record.status}">
+      <header>
+        <strong>${escapeHtml(record.name)}</strong>
+        <span>${record.status === "passed" ? "通过" : "失败"} · ${record.elapsed_ms}ms</span>
+      </header>
+      <div class="audit-dialog">${record.messages.map((message) => `<p>${escapeHtml(message)}</p>`).join("")}</div>
+      <p class="audit-answer">${escapeHtml(record.answer || "")}</p>
+      <div class="tags">${record.menu.map((item) => `<span class="tag">${escapeHtml(item.name)}</span>`).join("")}</div>
+      <ul>${issues}</ul>
+      <details>
+        <summary>调试 JSON</summary>
+        <pre>${escapeHtml(JSON.stringify(record.debug, null, 2))}</pre>
+      </details>
+    </article>
+  `;
+}
+
+function setAuditButtons(isRunning) {
+  $("auditStartBtn").disabled = isRunning;
+  $("auditCancelBtn").disabled = !isRunning || !state.auditJobId;
+}
+
+function clearAuditPoll() {
+  if (state.auditPollTimer) {
+    window.clearInterval(state.auditPollTimer);
+    state.auditPollTimer = null;
+  }
 }
 
 function renderRecipe(item) {
@@ -141,9 +299,31 @@ function labelOf(key) {
     taste_match: "口味匹配",
     scenario_match: "场景匹配",
     minimal_change: "最小修改",
+    nutrition_balance: "营养均衡",
     menu_count: "推荐数量",
   };
   return labels[key] || key;
+}
+
+function statusText(status) {
+  const labels = {
+    queued: "排队中",
+    running: "运行中",
+    canceling: "取消中",
+    canceled: "已取消",
+    completed: "已完成",
+    failed: "异常失败",
+  };
+  return labels[status] || status;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 init().catch((error) => {

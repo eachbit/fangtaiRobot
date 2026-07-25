@@ -68,6 +68,34 @@ Content-Type: application/json
 python tests/test_agent.py
 ```
 
+## Docker
+
+本项目提供最小离线 Docker 镜像配置，镜像内只运行本地 Python 服务，不依赖外部大模型或联网 API。
+
+构建镜像前，请确认本机 `data/` 目录已经放入官方菜谱、用户健康档案和对话用例文件。它们不会提交到 GitHub，但会在本地构建 Docker 镜像时被复制进镜像。
+
+```powershell
+docker build -t fangtai-robot:latest .
+```
+
+本地运行：
+
+```powershell
+docker run --rm -p 8000:8000 fangtai-robot:latest
+```
+
+健康检查：
+
+```powershell
+curl http://127.0.0.1:8000/api/health
+```
+
+如果组委会要求提交镜像文件，可以导出为 tar：
+
+```powershell
+docker save fangtai-robot:latest -o fangtai-robot.tar
+```
+
 ## Repository
 
 Remote target:

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
 from app.agent import get_dialog_cases, get_recipes, get_users, recommend
+from app.audit_jobs import manager as audit_jobs
+from app.scenario_agents import agent_candidates_to_audit_scenarios, generate_reviewed_candidates
 
 
 ROOT = Path(__file__).resolve().parent
@@ -26,23 +29,63 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/cases":
             self._json({"cases": get_dialog_cases()})
             return
+        if parsed.path == "/api/audit/jobs":
+            self._json({"jobs": audit_jobs.list_jobs()})
+            return
+        job_id = _audit_job_id(parsed.path)
+        if job_id:
+            try:
+                self._json(audit_jobs.get_job(job_id))
+            except KeyError:
+                self._json({"error": "audit_job_not_found"}, status=404)
+            return
         self._static(parsed.path)
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/audit/jobs":
+            try:
+                body = self._read_json()
+                scenarios = body.get("scenarios")
+                if scenarios is not None and not isinstance(scenarios, list):
+                    self._json({"error": "scenarios must be a list"}, status=400)
+                    return
+                if scenarios is None and body.get("source") == "agent_generated":
+                    count = int(body.get("count") or 20)
+                    seed = int(body.get("seed") or 20260725)
+                    candidates = generate_reviewed_candidates(seed=seed, count=count)
+                    scenarios = agent_candidates_to_audit_scenarios(candidates)
+                self._json(audit_jobs.start_job(scenarios))
+            except Exception as exc:
+                self._json({"error": "internal_error", "detail": str(exc)}, status=500)
+            return
+
+        job_id = _audit_cancel_job_id(parsed.path)
+        if job_id:
+            try:
+                self._json(audit_jobs.cancel_job(job_id))
+            except KeyError:
+                self._json({"error": "audit_job_not_found"}, status=404)
+            return
+
         if parsed.path != "/api/recommend":
             self._json({"error": "not_found"}, status=404)
             return
         try:
             body = self._read_json()
             user_id = body.get("user_id")
+            session_id = body.get("session_id")
             messages = body.get("messages")
             if messages is None and body.get("message"):
                 messages = [body["message"]]
             if not isinstance(messages, list) or not all(isinstance(item, str) for item in messages):
                 self._json({"error": "messages must be a string list"}, status=400)
                 return
-            result = recommend(int(user_id) if user_id not in (None, "") else None, messages)
+            result = recommend(
+                int(user_id) if user_id not in (None, "") else None,
+                messages,
+                session_id=session_id if session_id not in ("", None) else None,
+            )
             self._json(result)
         except Exception as exc:
             self._json({"error": "internal_error", "detail": str(exc)}, status=500)
@@ -95,9 +138,30 @@ class Handler(BaseHTTPRequestHandler):
         print("%s - %s" % (self.address_string(), format % args))
 
 
+def _audit_job_id(path: str) -> str | None:
+    prefix = "/api/audit/jobs/"
+    if not path.startswith(prefix):
+        return None
+    suffix = path[len(prefix):].strip("/")
+    if not suffix or "/" in suffix:
+        return None
+    return suffix
+
+
+def _audit_cancel_job_id(path: str) -> str | None:
+    prefix = "/api/audit/jobs/"
+    suffix = path[len(prefix):] if path.startswith(prefix) else ""
+    if not suffix.endswith("/cancel"):
+        return None
+    job_id = suffix[: -len("/cancel")].strip("/")
+    return job_id or None
+
+
 def main():
-    server = ThreadingHTTPServer(("127.0.0.1", 8000), Handler)
-    print("fangtaiRobot running at http://127.0.0.1:8000")
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "8000"))
+    server = ThreadingHTTPServer((host, port), Handler)
+    print(f"fangtaiRobot running at http://{host}:{port}")
     server.serve_forever()
 
 

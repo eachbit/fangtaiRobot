@@ -85,6 +85,28 @@ def main():
     assert "甜" in not_too_sweet["constraints"]["avoid_tastes"]
     assert "甜" not in sweet_text
 
+    session_first = recommend(1, ["我想吃高蛋白，推荐3道菜"])
+    session_id = session_first["session_id"]
+    assert session_id, "recommend should return a session id for multi-turn revisions"
+
+    session_second = recommend(1, ["我不吃虾，其他尽量别动"], session_id=session_id)
+    assert session_second["session_id"] == session_id
+    assert len(session_second["menu"]) == len(session_first["menu"])
+    first_names = [item["name"] for item in session_first["menu"]]
+    second_names = [item["name"] for item in session_second["menu"]]
+    shared = len(set(first_names) & set(second_names))
+    assert shared >= len(first_names) - 1, "minimal revision should keep most of the prior menu"
+    assert not any("虾" in (item["name"] + item["ingredients"]) for item in session_second["menu"])
+
+    nutrition_result = recommend(None, ["四个人晚饭，推荐4道菜"])
+    nutrition = nutrition_result["nutrition"]
+    assert nutrition["table"]["dish_count"] == len(nutrition_result["menu"])
+    assert nutrition["table"]["people_count"] == 4
+    assert nutrition["table"]["totals"]["kcal"] > 0
+    assert nutrition["per_person"]["kcal"] == round(nutrition["table"]["totals"]["kcal"] / 4, 1)
+    assert 0 <= nutrition["confidence"]["coverage_ratio"] <= 1
+    assert nutrition_result["score_card"]["nutrition_balance"] in {"high", "medium", "low"}
+
     print(f"ok: {len(recipes)} recipes, {len(users)} users, {len(cases)} dialog cases")
 
 
