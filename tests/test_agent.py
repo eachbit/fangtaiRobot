@@ -98,6 +98,19 @@ def main():
     assert shared >= len(first_names) - 1, "minimal revision should keep most of the prior menu"
     assert not any("虾" in (item["name"] + item["ingredients"]) for item in session_second["menu"])
 
+    egg_dislike = recommend(None, ["4个人吃午餐，先推荐4道菜。", "我不吃鸡蛋，其他菜尽量别动。"])
+    assert "鸡蛋" in egg_dislike["constraints"]["avoid_ingredients"]
+    assert "鸡蛋" not in egg_dislike["constraints"]["allergens"]
+    assert "已避开过敏食材" not in egg_dislike["answer"]
+    assert "已避开忌口食材" in egg_dislike["answer"]
+
+    egg_taboo = recommend(None, ["4个人吃午餐，先推荐4道菜。", "我忌口鸡蛋，其他菜尽量别动。"])
+    assert "鸡蛋" in egg_taboo["constraints"]["avoid_ingredients"]
+    assert "鸡蛋" not in egg_taboo["constraints"]["allergens"]
+
+    egg_allergy = recommend(None, ["4个人吃午餐，先推荐4道菜。", "我对鸡蛋过敏，其他菜尽量别动。"])
+    assert "鸡蛋" in egg_allergy["constraints"]["allergens"]
+
     nutrition_result = recommend(None, ["四个人晚饭，推荐4道菜"])
     nutrition = nutrition_result["nutrition"]
     assert nutrition["table"]["dish_count"] == len(nutrition_result["menu"])

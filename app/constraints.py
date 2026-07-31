@@ -129,6 +129,8 @@ def extract_constraints(messages: list[str], user: UserProfile | None = None) ->
     if "甜" in constraints.avoid_tastes and constraints.taste in ("甜", "酸甜"):
         constraints.taste = None
 
+    constraints.avoid_ingredients.extend(_extract_explicit_avoid_ingredients(text))
+
     for goal, keywords in HEALTH_KEYWORDS.items():
         if _contains_any(text, keywords):
             constraints.health_goals.append(goal)
@@ -224,7 +226,6 @@ def infer_profile_from_text(text: str) -> dict:
             f"对{allergen}过敏" in text
             or f"{allergen}过敏" in text
             or f"不能吃{allergen}" in text
-            or f"不吃{allergen}" in text
         ):
             profile["allergens"].append(allergen)
 
@@ -243,6 +244,27 @@ def _extract_avoid_tastes(text: str) -> list[str]:
     if any(pattern in text for pattern in ["别太油", "不油", "少油", "不要油", "不能太油"]):
         avoid.append("油")
     return _dedupe(avoid)
+
+
+def _extract_explicit_avoid_ingredients(text: str) -> list[str]:
+    ingredients = _dedupe(ALLERGEN_PATTERNS + INGREDIENT_KEYWORDS)
+    prefixes = [
+        "不吃",
+        "不喜欢吃",
+        "不爱吃",
+        "不想吃",
+        "不要吃",
+        "不要",
+        "忌口",
+        "避开",
+        "别放",
+        "不放",
+    ]
+    avoid: list[str] = []
+    for ingredient in ingredients:
+        if any(f"{prefix}{ingredient}" in text for prefix in prefixes):
+            avoid.append(ingredient)
+    return avoid
 
 
 def _remove_blocked_preferred_ingredients(preferred: list[str], blocked: list[str]) -> list[str]:

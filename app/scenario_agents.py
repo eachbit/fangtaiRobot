@@ -47,6 +47,7 @@ class CustomerScenarioAgent:
             health_goal=health_goal,
             people_count=people_count,
         )
+        messages = _ensure_health_goal_visible(messages, health_goal)
         truth: dict[str, Any] = {
             "dish_count": dish_count,
             "meal": meal,
@@ -212,6 +213,14 @@ def _string_list(value: Any) -> list[str]:
     if type(value) is not list:
         return []
     return [item for item in value if type(item) is str and item]
+
+
+def _ensure_health_goal_visible(messages: list[str], health_goal: str) -> list[str]:
+    if not health_goal or health_goal in "".join(messages):
+        return messages
+    updated = list(messages)
+    updated[0] = f"{updated[0]} 同时兼顾{health_goal}。"
+    return updated
 
 
 def _nutrition_targets(health_goal: str, meal: str) -> dict[str, Any]:
