@@ -16,6 +16,8 @@ def plan_meal(
     ranked = rank_recipes(recipes, constraints, user, limit=48)
     menu_size = _menu_size(constraints)
     selected = _revision_select(recipes, ranked, constraints, user, menu_size, previous_menu_ids)
+    if not previous_menu_ids:
+        selected = _nutrition_refine_select(ranked, selected, constraints)
     changes = _build_changes(previous_menu_ids, selected)
     warnings = _collect_warnings(selected)
 
@@ -178,6 +180,119 @@ def _balanced_select(ranked: list[dict], size: int) -> list[dict]:
         if len(selected) >= size:
             break
     return selected[:size]
+
+
+def _nutrition_refine_select(ranked: list[dict], selected: list[dict], constraints: Constraints) -> list[dict]:
+    if len(selected) < 2:
+        return selected
+    selected = list(selected)
+    used_names = {item["recipe"].name for item in selected}
+    best_penalty = _nutrition_penalty(selected, constraints)
+    for _ in range(3):
+        improved = False
+        for index, current in enumerate(list(selected)):
+            replacement = _best_nutrition_replacement(
+                ranked,
+                selected,
+                used_names,
+                index,
+                best_penalty,
+                constraints,
+            )
+            if replacement is None:
+                continue
+            next_penalty, item = replacement
+            used_names.remove(current["recipe"].name)
+            selected[index] = item
+            used_names.add(item["recipe"].name)
+            best_penalty = next_penalty
+            improved = True
+        if not improved:
+            break
+    return selected
+
+
+def _best_nutrition_replacement(
+    ranked: list[dict],
+    selected: list[dict],
+    used_names: set[str],
+    index: int,
+    current_penalty: float,
+    constraints: Constraints,
+) -> tuple[float, dict] | None:
+    current = selected[index]
+    current_category = classify_recipe(current["recipe"])
+    best: tuple[float, dict] | None = None
+    for item in ranked[:48]:
+        recipe = item["recipe"]
+        if recipe.name in used_names:
+            continue
+        if len(selected) >= 3 and classify_recipe(recipe) != current_category:
+            continue
+        trial = list(selected)
+        trial[index] = item
+        penalty = _nutrition_penalty(trial, constraints)
+        if penalty + 0.05 >= current_penalty:
+            continue
+        if best is None or penalty < best[0]:
+            best = (penalty, item)
+    return best
+
+
+def _nutrition_penalty(selected: list[dict], constraints: Constraints) -> float:
+    menu = [_selected_item_to_menu(item) for item in selected]
+    nutrition = estimate_menu_nutrition(menu, constraints)
+    per_person = nutrition["per_person"]
+    kcal_low, kcal_high = _kcal_target(constraints)
+    penalty = 0.0
+
+    kcal = per_person["kcal"]
+    if kcal < kcal_low:
+        penalty += (kcal_low - kcal) / 80
+    if kcal > kcal_high:
+        penalty += (kcal - kcal_high) / 120
+
+    sodium_limit = 800 if "降压" in constraints.health_goals else 1200
+    sodium = per_person["sodium_mg"]
+    if sodium > sodium_limit:
+        penalty += (sodium - sodium_limit) / 500
+
+    fat = per_person["fat_g"]
+    if fat > 38:
+        penalty += (fat - 38) / 12
+    if "减脂" in constraints.health_goals and fat > 35:
+        penalty += (fat - 35) / 8
+
+    protein = per_person["protein_g"]
+    if "增肌" in constraints.health_goals and protein < 20:
+        penalty += (20 - protein) / 6
+
+    sugar = per_person["sugar_g"]
+    if "控糖" in constraints.health_goals and sugar > 35:
+        penalty += (sugar - 35) / 10
+
+    if nutrition["balance_level"] == "low":
+        penalty += 1.0
+    return penalty
+
+
+def _selected_item_to_menu(item: dict) -> dict:
+    recipe = item["recipe"]
+    return {
+        "id": recipe.id,
+        "name": recipe.name,
+        "ingredients": recipe.ingredients,
+        "steps": recipe.steps,
+        "labels": recipe.labels,
+        "score": item["score"],
+        "reason": "",
+    }
+
+
+def _kcal_target(constraints: Constraints) -> tuple[int, int]:
+    if constraints.meal == "早餐":
+        return 250, 550
+    return 350, 900
 
 
 def _category_targets(size: int) -> list[str]:

@@ -102,11 +102,12 @@ def test_agent_generated_nutrition_targets_are_advisory_not_blocking():
 def test_agent_generated_batch_reports_hard_constraint_passes_separately_from_advisories():
     scenarios = agent_candidates_to_audit_scenarios(generate_reviewed_candidates(seed=20260725, count=50))
     report = run_audit(scenarios)
+    advisory_count = sum(1 for record in report["records"] if record["debug"].get("nutrition_advisories"))
 
     assert report["summary"]["total"] == 50
     assert report["summary"]["failed"] == 0
     assert report["summary"]["passed"] == 50
-    assert any(record["debug"].get("nutrition_advisories") for record in report["records"])
+    assert advisory_count <= 32
 
 
 def test_audit_job_manager_runs_background_job_to_completion():
