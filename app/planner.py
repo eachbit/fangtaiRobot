@@ -349,10 +349,16 @@ def build_score_card(
         "health_match": _level(health_hits, total) if constraints.health_goals else "not_required",
         "taste_match": _level(taste_hits, total) if constraints.taste else "not_required",
         "scenario_match": _level(scenario_hits, total),
-        "minimal_change": (changes or {}).get("change_count", 0) <= 1,
+        "minimal_change": _minimal_change_pass(changes or {}),
         "nutrition_balance": (nutrition or {}).get("balance_level", "low"),
         "menu_count": total,
     }
+
+
+def _minimal_change_pass(changes: dict) -> bool:
+    if changes.get("mode") == "minimal_revision":
+        return True
+    return changes.get("change_count", 0) <= 1
 
 
 def _level(hit: int, total: int) -> str:

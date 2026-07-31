@@ -75,9 +75,10 @@ def run_audit(scenarios: list[dict[str, Any]] | None = None) -> dict[str, Any]:
 def evaluate_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
     start = time.perf_counter()
     try:
-        result = recommend(scenario.get("user_id"), list(scenario.get("messages") or []))
+        result, turn_debug = _recommend_for_audit(scenario)
         elapsed_ms = _elapsed_ms(start)
         issues, debug = _audit_result(scenario, result, elapsed_ms)
+        debug.update(turn_debug)
         menu = result.get("menu") or []
         return {
             "name": scenario.get("name") or "未命名场景",
@@ -106,6 +107,40 @@ def evaluate_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
             "debug": {"exception": repr(exc)},
             "result": None,
         }
+
+
+def _recommend_for_audit(scenario: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    messages = list(scenario.get("messages") or [])
+    user_id = scenario.get("user_id")
+    if len(messages) <= 1:
+        return recommend(user_id, messages), {
+            "turn_count": len(messages),
+            "session_simulated": False,
+        }
+
+    session_id = None
+    result: dict[str, Any] | None = None
+    turns: list[dict[str, Any]] = []
+    for index, message in enumerate(messages):
+        result = recommend(user_id, [message], session_id=session_id)
+        session_id = result.get("session_id")
+        changes = result.get("changes") or {}
+        turns.append(
+            {
+                "turn": index + 1,
+                "message": message,
+                "session_id": session_id,
+                "menu_ids": [item.get("id") for item in result.get("menu") or []],
+                "change_mode": changes.get("mode"),
+                "change_count": changes.get("change_count"),
+            }
+        )
+    assert result is not None
+    return result, {
+        "turn_count": len(messages),
+        "session_simulated": True,
+        "turns": turns,
+    }
 
 
 def _audit_result(scenario: dict[str, Any], result: dict[str, Any], elapsed_ms: int) -> tuple[list[str], dict[str, Any]]:

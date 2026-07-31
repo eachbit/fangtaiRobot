@@ -98,6 +98,17 @@ def main():
     assert shared >= len(first_names) - 1, "minimal revision should keep most of the prior menu"
     assert not any("虾" in (item["name"] + item["ingredients"]) for item in session_second["menu"])
 
+    necessary_multi_replace_first = recommend(None, ["4个人吃晚餐，先推荐6道菜。 同时兼顾增肌。"])
+    necessary_multi_replace_second = recommend(
+        None,
+        ["我不吃虾，其他菜尽量别动。"],
+        session_id=necessary_multi_replace_first["session_id"],
+    )
+    assert necessary_multi_replace_second["changes"]["mode"] == "minimal_revision"
+    assert necessary_multi_replace_second["changes"]["change_count"] > 1
+    assert necessary_multi_replace_second["changes"]["kept_dishes"]
+    assert necessary_multi_replace_second["score_card"]["minimal_change"] is True
+
     egg_dislike = recommend(None, ["4个人吃午餐，先推荐4道菜。", "我不吃鸡蛋，其他菜尽量别动。"])
     assert "鸡蛋" in egg_dislike["constraints"]["avoid_ingredients"]
     assert "鸡蛋" not in egg_dislike["constraints"]["allergens"]

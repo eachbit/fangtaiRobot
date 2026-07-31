@@ -27,6 +27,15 @@ FAILING_SCENARIO = {
     "expect_count": 5,
 }
 
+REVISION_SCENARIO = {
+    "name": "多轮真实会话-追加鸡蛋忌口",
+    "user_id": None,
+    "messages": ["4个人吃午餐，先推荐4道菜。", "我不吃鸡蛋，其他菜尽量别动。"],
+    "forbid": ["鸡蛋"],
+    "expect_count": 4,
+    "structured_ground_truth": {"preserve_unaffected": True},
+}
+
 
 def test_run_audit_reports_pass_and_failure_details():
     report = run_audit([PASSING_SCENARIO, FAILING_SCENARIO])
@@ -71,6 +80,19 @@ def test_run_audit_includes_official_100_point_report():
     assert official["sections"]["performance_efficiency"]["max_score"] == 30
     assert official["top_issues"]
     assert official["recommendations"]
+
+
+def test_run_audit_simulates_multi_turn_sessions_for_minimal_revision():
+    report = run_audit([REVISION_SCENARIO])
+    record = report["records"][0]
+    official = report["summary"]["official_report"]
+
+    assert record["status"] == "passed"
+    assert record["result"]["changes"]["mode"] == "minimal_revision"
+    assert record["result"]["score_card"]["minimal_change"] is True
+    assert record["debug"]["turn_count"] == 2
+    assert record["debug"]["session_simulated"] is True
+    assert official["sections"]["multi_turn_interaction"]["score"] == 30
 
 
 def test_run_audit_includes_nutrition_evaluation_details():
@@ -131,6 +153,7 @@ def test_agent_generated_batch_reports_hard_constraint_passes_separately_from_ad
     official = report["summary"]["official_report"]
     assert official["total_score"] >= 70
     assert official["sections"]["basic_recommendation"]["score"] == 20
+    assert official["sections"]["multi_turn_interaction"]["score"] >= 25
     assert official["sections"]["performance_efficiency"]["score"] == 30
 
 
@@ -165,6 +188,7 @@ def test_audit_job_manager_runs_background_job_to_completion():
 def main():
     test_run_audit_reports_pass_and_failure_details()
     test_run_audit_includes_official_100_point_report()
+    test_run_audit_simulates_multi_turn_sessions_for_minimal_revision()
     test_run_audit_includes_nutrition_evaluation_details()
     test_agent_generated_nutrition_targets_are_advisory_not_blocking()
     test_agent_generated_batch_reports_hard_constraint_passes_separately_from_advisories()
