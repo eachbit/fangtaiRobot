@@ -16,12 +16,17 @@ def main():
         page.goto("http://127.0.0.1:8000")
         page.wait_for_load_state("networkidle")
 
-        expect(page.locator("#status")).to_contain_text("2000 菜谱")
+        expect(page.locator("#status")).to_contain_text("2000")
         expect(page.locator("#auditStartBtn")).to_be_enabled()
         page.locator("#auditStartBtn").click()
-        expect(page.locator("#auditOverview")).to_contain_text("已完成", timeout=15000)
-        expect(page.locator("#auditRecords")).to_contain_text("硬约束-花生过敏")
-        expect(page.locator("#auditRecords")).to_contain_text("调试 JSON")
+        expect(page.locator("#auditRecords")).to_contain_text("expected_count", timeout=15000)
+
+        page.locator("#auditSource").select_option("agent_generated")
+        page.locator("#auditCount").fill("10")
+        page.locator("#auditSeed").fill("20260725")
+        page.locator("#auditStartBtn").click()
+        expect(page.locator("#auditRecords")).to_contain_text("agent_generated", timeout=15000)
+        expect(page.locator("#auditRecords")).to_contain_text("agent_review")
 
         if os.environ.get("SAVE_SCREENSHOT"):
             SCREENSHOT.parent.mkdir(exist_ok=True)

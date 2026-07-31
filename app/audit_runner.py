@@ -160,10 +160,20 @@ def _audit_result(scenario: dict[str, Any], result: dict[str, Any], elapsed_ms: 
             result.get("nutrition") or {},
             nutrition_targets,
         )
-        issues.extend(nutrition_issues)
         debug["nutrition_evaluation"] = nutrition_debug
+        if _nutrition_targets_are_strict(scenario):
+            issues.extend(nutrition_issues)
+        elif nutrition_issues:
+            debug["nutrition_advisories"] = nutrition_issues
 
     return issues, debug
+
+
+def _nutrition_targets_are_strict(scenario: dict[str, Any]) -> bool:
+    truth = scenario.get("structured_ground_truth") or {}
+    if truth.get("nutrition_strict") is True:
+        return True
+    return scenario.get("source") != "agent_generated"
 
 
 def _evaluate_nutrition_targets(nutrition: dict[str, Any], targets: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:

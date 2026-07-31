@@ -386,6 +386,40 @@ ul {
   color: var(--text);
 }
 
+.audit-meta,
+.audit-advisory {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.audit-meta span {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #eef2f6;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.audit-advisory {
+  display: block;
+  padding: 10px 12px;
+  border: 1px solid #f2d5a7;
+  border-radius: 6px;
+  background: #fff8eb;
+  color: #6f4a12;
+}
+
+.audit-advisory strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.audit-advisory ul {
+  color: inherit;
+}
+
 .audit-record details {
   margin-top: 10px;
 }

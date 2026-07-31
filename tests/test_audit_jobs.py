@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT))
 
 from app.audit_jobs import AuditJobManager
 from app.audit_runner import run_audit
+from app.scenario_agents import agent_candidates_to_audit_scenarios, generate_reviewed_candidates
 
 
 PASSING_SCENARIO = {
@@ -75,6 +76,39 @@ def test_run_audit_includes_nutrition_evaluation_details():
     assert any("nutrition" in issue for issue in record["issues"])
 
 
+def test_agent_generated_nutrition_targets_are_advisory_not_blocking():
+    scenario = {
+        **PASSING_SCENARIO,
+        "source": "agent_generated",
+        "agent_review": {"review_agent": "local-deterministic", "naturalness": 4, "clarity": 5},
+        "structured_ground_truth": {
+            "nutrition_targets": {
+                "min_balance_level": "high",
+                "min_confidence_level": "high",
+                "max_sodium_mg_per_person": 1,
+            }
+        },
+    }
+
+    report = run_audit([scenario])
+    record = report["records"][0]
+
+    assert record["status"] == "passed"
+    assert record["issues"] == []
+    assert "nutrition_evaluation" in record["debug"]
+    assert any("nutrition" in item for item in record["debug"]["nutrition_advisories"])
+
+
+def test_agent_generated_batch_reports_hard_constraint_passes_separately_from_advisories():
+    scenarios = agent_candidates_to_audit_scenarios(generate_reviewed_candidates(seed=20260725, count=50))
+    report = run_audit(scenarios)
+
+    assert report["summary"]["total"] == 50
+    assert report["summary"]["failed"] == 0
+    assert report["summary"]["passed"] == 50
+    assert any(record["debug"].get("nutrition_advisories") for record in report["records"])
+
+
 def test_audit_job_manager_runs_background_job_to_completion():
     manager = AuditJobManager(max_jobs=4)
     job = manager.start_job([PASSING_SCENARIO, FAILING_SCENARIO])
@@ -105,6 +139,8 @@ def test_audit_job_manager_runs_background_job_to_completion():
 def main():
     test_run_audit_reports_pass_and_failure_details()
     test_run_audit_includes_nutrition_evaluation_details()
+    test_agent_generated_nutrition_targets_are_advisory_not_blocking()
+    test_agent_generated_batch_reports_hard_constraint_passes_separately_from_advisories()
     test_audit_job_manager_runs_background_job_to_completion()
     print("ok: audit runner and background jobs")
 

@@ -150,7 +150,7 @@ async function startAuditJob() {
   try {
     const job = await api("/api/audit/jobs", {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify(buildAuditRequest()),
     });
     state.auditJobId = job.job_id;
     renderAuditJob(job);
@@ -159,6 +159,27 @@ async function startAuditJob() {
     alert(`启动评测失败：${error.message}`);
     setAuditButtons(false);
   }
+}
+
+function buildAuditRequest() {
+  const source = $("auditSource") ? $("auditSource").value : "fixed";
+  if (source !== "agent_generated") {
+    return {};
+  }
+  const count = clampNumber(Number($("auditCount").value || 10), 1, 200);
+  const seed = Number($("auditSeed").value || 20260725);
+  $("auditCount").value = String(count);
+  $("auditSeed").value = String(Number.isFinite(seed) ? seed : 20260725);
+  return {
+    source: "agent_generated",
+    count,
+    seed: Number($("auditSeed").value),
+  };
+}
+
+function clampNumber(value, min, max) {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, Math.round(value)));
 }
 
 async function cancelAuditJob() {
@@ -252,15 +273,51 @@ function renderAuditRecord(record) {
         <strong>${escapeHtml(record.name)}</strong>
         <span>${record.status === "passed" ? "通过" : "失败"} · ${record.elapsed_ms}ms</span>
       </header>
+      ${renderAuditMeta(record)}
       <div class="audit-dialog">${record.messages.map((message) => `<p>${escapeHtml(message)}</p>`).join("")}</div>
       <p class="audit-answer">${escapeHtml(record.answer || "")}</p>
       <div class="tags">${record.menu.map((item) => `<span class="tag">${escapeHtml(item.name)}</span>`).join("")}</div>
+      ${renderAuditAdvisories(record)}
       <ul>${issues}</ul>
       <details>
         <summary>调试 JSON</summary>
         <pre>${escapeHtml(JSON.stringify(record.debug, null, 2))}</pre>
       </details>
     </article>
+  `;
+}
+
+function renderAuditMeta(record) {
+  const debug = record.debug || {};
+  const review = debug.agent_review || {};
+  const items = [];
+  if (debug.source) {
+    items.push(`source: ${debug.source}`);
+  }
+  if (review.review_agent) {
+    items.push(`agent_review: ${review.review_agent}`);
+  }
+  if (review.naturalness) {
+    items.push(`naturalness ${review.naturalness}/5`);
+  }
+  if (review.clarity) {
+    items.push(`clarity ${review.clarity}/5`);
+  }
+  return items.length
+    ? `<div class="audit-meta">${items.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>`
+    : "";
+}
+
+function renderAuditAdvisories(record) {
+  const advisories = (record.debug || {}).nutrition_advisories || [];
+  if (!advisories.length) {
+    return "";
+  }
+  return `
+    <div class="audit-advisory">
+      <strong>nutrition advisory</strong>
+      <ul>${advisories.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+    </div>
   `;
 }
 

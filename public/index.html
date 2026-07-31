@@ -65,10 +65,29 @@
             <h2>后台评测控制台</h2>
             <p>自动运行竞赛验收场景，记录询问、回答、错误和耗时。</p>
           </div>
+          <div class="audit-command">
+            <div class="audit-options">
+              <label>
+                评测来源
+                <select id="auditSource">
+                  <option value="fixed">固定验收场景</option>
+                  <option value="agent_generated">客户 Agent + 评审 Agent</option>
+                </select>
+              </label>
+              <label>
+                数量
+                <input id="auditCount" type="number" min="1" max="200" value="10" />
+              </label>
+              <label>
+                Seed
+                <input id="auditSeed" type="number" value="20260725" />
+              </label>
+            </div>
           <div class="audit-actions">
             <button id="auditStartBtn">启动评测</button>
             <button id="auditCancelBtn" class="secondary" disabled>取消任务</button>
             <button id="auditRefreshBtn" class="secondary">刷新</button>
+          </div>
           </div>
         </div>
 
