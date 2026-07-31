@@ -68,7 +68,7 @@ DEFAULT_SCENARIOS: list[dict[str, Any]] = [
 def run_audit(scenarios: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     start = time.perf_counter()
     records = [evaluate_scenario(scenario) for scenario in (scenarios or DEFAULT_SCENARIOS)]
-    summary = _summary(records, start)
+    summary = build_audit_summary(records, len(records), start)
     return {"summary": summary, "records": records}
 
 
@@ -236,15 +236,225 @@ def _number(value: Any) -> float | None:
     return None
 
 
-def _summary(records: list[dict[str, Any]], start: float) -> dict[str, Any]:
+def build_audit_summary(records: list[dict[str, Any]], total: int, start: float) -> dict[str, Any]:
     failed = sum(1 for record in records if record["status"] == "failed")
-    total = len(records)
+    completed = len(records)
     return {
         "total": total,
-        "passed": total - failed,
+        "passed": completed - failed,
         "failed": failed,
         "duration_ms": _elapsed_ms(start),
+        "official_report": _official_report(records, total),
     }
+
+
+def _official_report(records: list[dict[str, Any]], total: int) -> dict[str, Any]:
+    sections = {
+        "basic_recommendation": _basic_recommendation_section(records),
+        "complex_scenario": _complex_scenario_section(records),
+        "multi_turn_interaction": _multi_turn_section(records),
+        "performance_efficiency": _performance_section(records),
+    }
+    total_score = sum(section["score"] for section in sections.values())
+    top_issues = _top_issues(records)
+    recommendations = _official_recommendations(sections, top_issues)
+    return {
+        "total_score": round(total_score, 1),
+        "max_score": 100,
+        "record_count": total,
+        "completed_count": len(records),
+        "sections": sections,
+        "top_issues": top_issues,
+        "recommendations": recommendations,
+    }
+
+
+def _basic_recommendation_section(records: list[dict[str, Any]]) -> dict[str, Any]:
+    forbidden_violations = _count_issues(records, "命中禁忌")
+    empty_menus = _count_issues(records, "空菜单")
+    official_failures = sum(
+        1
+        for record in records
+        if not (((record.get("result") or {}).get("score_card") or {}).get("official_recipe", False))
+    )
+    penalty = min(20.0, forbidden_violations * 5.0 + empty_menus * 5.0 + official_failures * 5.0)
+    return _section(
+        score=20.0 - penalty,
+        max_score=20,
+        metrics={
+            "forbidden_violations": forbidden_violations,
+            "empty_menus": empty_menus,
+            "official_recipe_failures": official_failures,
+        },
+        samples=_sample_names(records, lambda record: _has_issue(record, "命中禁忌") or _has_issue(record, "空菜单")),
+    )
+
+
+def _complex_scenario_section(records: list[dict[str, Any]]) -> dict[str, Any]:
+    complex_records = [record for record in records if _is_complex_record(record)]
+    count_mismatches = _count_issues(complex_records, "数量不符")
+    nutrition_advisory_records = sum(1 for record in complex_records if (record.get("debug") or {}).get("nutrition_advisories"))
+    low_balance = sum(
+        1
+        for record in complex_records
+        if (((record.get("result") or {}).get("nutrition") or {}).get("balance_level") == "low")
+    )
+    denominator = max(1, len(complex_records))
+    weighted_risk = count_mismatches * 0.45 + nutrition_advisory_records * 0.20 + low_balance * 0.25
+    penalty = 20.0 * min(1.0, weighted_risk / denominator)
+    return _section(
+        score=20.0 - penalty,
+        max_score=20,
+        metrics={
+            "complex_records": len(complex_records),
+            "count_mismatches": count_mismatches,
+            "nutrition_advisory_records": nutrition_advisory_records,
+            "low_balance_records": low_balance,
+        },
+        samples=_sample_names(
+            complex_records,
+            lambda record: _has_issue(record, "数量不符") or bool((record.get("debug") or {}).get("nutrition_advisories")),
+        ),
+    )
+
+
+def _multi_turn_section(records: list[dict[str, Any]]) -> dict[str, Any]:
+    multi_turn_records = [record for record in records if _is_multi_turn_record(record)]
+    failed_records = sum(1 for record in multi_turn_records if record["status"] == "failed")
+    minimal_change_failures = sum(
+        1
+        for record in multi_turn_records
+        if (((record.get("result") or {}).get("score_card") or {}).get("minimal_change") is False)
+    )
+    low_review_quality = sum(1 for record in multi_turn_records if _review_score(record, "naturalness") < 4 or _review_score(record, "clarity") < 4)
+    denominator = max(1, len(multi_turn_records))
+    weighted_risk = failed_records * 0.50 + minimal_change_failures * 0.35 + low_review_quality * 0.15
+    penalty = 30.0 * min(1.0, weighted_risk / denominator)
+    return _section(
+        score=30.0 - penalty,
+        max_score=30,
+        metrics={
+            "multi_turn_records": len(multi_turn_records),
+            "failed_records": failed_records,
+            "minimal_change_failures": minimal_change_failures,
+            "low_review_quality_records": low_review_quality,
+        },
+        samples=_sample_names(
+            multi_turn_records,
+            lambda record: record["status"] == "failed"
+            or (((record.get("result") or {}).get("score_card") or {}).get("minimal_change") is False),
+        ),
+    )
+
+
+def _performance_section(records: list[dict[str, Any]]) -> dict[str, Any]:
+    elapsed = sorted(int(record.get("elapsed_ms") or 0) for record in records)
+    p95 = _percentile(elapsed, 0.95)
+    average = round(sum(elapsed) / len(elapsed), 1) if elapsed else 0.0
+    over_8s = sum(1 for value in elapsed if value > 8000)
+    over_15s = sum(1 for value in elapsed if value > 15000)
+    penalty = 0.0
+    if p95 > 2000:
+        penalty += 8.0 if p95 <= 5000 else 15.0
+    if average > 6000:
+        penalty += 5.0 if average <= 12000 else 10.0
+    penalty += min(5.0, over_8s * 1.0 + over_15s * 2.0)
+    return _section(
+        score=max(0.0, 30.0 - penalty),
+        max_score=30,
+        metrics={
+            "average_ms": average,
+            "p95_ms": p95,
+            "over_8s_records": over_8s,
+            "over_15s_records": over_15s,
+        },
+        samples=_sample_names(records, lambda record: int(record.get("elapsed_ms") or 0) > 8000),
+    )
+
+
+def _section(score: float, max_score: int, metrics: dict[str, Any], samples: list[str]) -> dict[str, Any]:
+    return {
+        "score": round(max(0.0, min(float(max_score), score)), 1),
+        "max_score": max_score,
+        "metrics": metrics,
+        "samples": samples,
+    }
+
+
+def _is_complex_record(record: dict[str, Any]) -> bool:
+    name = str(record.get("name") or "")
+    constraints = record.get("constraints") or {}
+    expected_count = (record.get("debug") or {}).get("expected_count")
+    return (
+        any(word in name for word in ["复杂", "多人", "聚餐", "正式", "六人"])
+        or int(constraints.get("people_count") or 0) > 1
+        or int(expected_count or 0) >= 4
+    )
+
+
+def _is_multi_turn_record(record: dict[str, Any]) -> bool:
+    name = str(record.get("name") or "")
+    messages = record.get("messages") or []
+    return "多轮" in name or len(messages) > 1
+
+
+def _review_score(record: dict[str, Any], key: str) -> int:
+    review = ((record.get("debug") or {}).get("agent_review") or {})
+    value = review.get(key)
+    return int(value) if isinstance(value, int) else 5
+
+
+def _count_issues(records: list[dict[str, Any]], term: str) -> int:
+    return sum(1 for record in records for issue in record.get("issues", []) if term in issue)
+
+
+def _has_issue(record: dict[str, Any], term: str) -> bool:
+    return any(term in issue for issue in record.get("issues", []))
+
+
+def _sample_names(records: list[dict[str, Any]], predicate, limit: int = 5) -> list[str]:
+    return [str(record.get("name") or "未命名场景") for record in records if predicate(record)][:limit]
+
+
+def _top_issues(records: list[dict[str, Any]], limit: int = 6) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for record in records:
+        for issue in record.get("issues", []):
+            label = issue.split(":", 1)[0]
+            counts[label] = counts.get(label, 0) + 1
+        for advisory in (record.get("debug") or {}).get("nutrition_advisories") or []:
+            label = advisory.split(":", 1)[0]
+            counts[f"advisory:{label}"] = counts.get(f"advisory:{label}", 0) + 1
+    if not counts:
+        return [{"issue": "未发现硬失败", "count": 0}]
+    return [
+        {"issue": issue, "count": count}
+        for issue, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]
+    ]
+
+
+def _official_recommendations(sections: dict[str, dict[str, Any]], top_issues: list[dict[str, Any]]) -> list[str]:
+    suggestions: list[str] = []
+    if sections["basic_recommendation"]["score"] < 20:
+        suggestions.append("优先修复忌口/过敏和空菜单问题，这会直接影响基础推荐得分。")
+    if sections["complex_scenario"]["metrics"]["nutrition_advisory_records"]:
+        suggestions.append("继续优化多人整桌营养目标，重点关注钠、糖、蛋白质和脂肪偏差。")
+    if sections["multi_turn_interaction"]["metrics"]["minimal_change_failures"]:
+        suggestions.append("加强多轮会话菜单保留，避免用户要求微调时大面积换菜。")
+    if sections["performance_efficiency"]["score"] < 30:
+        suggestions.append("检查慢场景的检索和营养换菜路径，保持 P95 小于 2 秒。")
+    if not suggestions and top_issues and top_issues[0]["count"] > 0:
+        suggestions.append(f"优先查看最高频问题：{top_issues[0]['issue']}，定位对应失败样例后补回归测试。")
+    if not suggestions and top_issues and top_issues[0]["count"] == 0:
+        suggestions.append("当前批测没有硬失败，下一步应扩大健康情况和多人冲突覆盖范围。")
+    return suggestions[:4]
+
+
+def _percentile(values: list[int], ratio: float) -> int:
+    if not values:
+        return 0
+    index = min(len(values) - 1, max(0, int(round((len(values) - 1) * ratio))))
+    return values[index]
 
 
 def _menu_summary(menu: list[dict[str, Any]]) -> list[dict[str, Any]]:

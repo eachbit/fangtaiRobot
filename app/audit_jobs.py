@@ -6,7 +6,7 @@ from threading import Event, Lock, Thread
 from typing import Any
 from uuid import uuid4
 
-from .audit_runner import DEFAULT_SCENARIOS, evaluate_scenario
+from .audit_runner import DEFAULT_SCENARIOS, build_audit_summary, evaluate_scenario
 
 
 class AuditJobManager:
@@ -96,14 +96,7 @@ class AuditJobManager:
             job["updated_at"] = time.time()
 
     def _build_summary(self, records: list[dict[str, Any]], total: int, start: float) -> dict[str, Any]:
-        failed = sum(1 for record in records if record["status"] == "failed")
-        completed = len(records)
-        return {
-            "total": total,
-            "passed": completed - failed,
-            "failed": failed,
-            "duration_ms": int(round((time.perf_counter() - start) * 1000)),
-        }
+        return build_audit_summary(records, total, start)
 
     def _trim_jobs(self) -> None:
         while len(self._jobs) > self.max_jobs:

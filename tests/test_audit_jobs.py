@@ -53,6 +53,26 @@ def test_run_audit_reports_pass_and_failure_details():
     assert failing["debug"]["actual_count"] == len(failing["menu"])
 
 
+def test_run_audit_includes_official_100_point_report():
+    report = run_audit([PASSING_SCENARIO, FAILING_SCENARIO])
+    official = report["summary"]["official_report"]
+
+    assert official["max_score"] == 100
+    assert 0 <= official["total_score"] <= 100
+    assert set(official["sections"]) == {
+        "basic_recommendation",
+        "complex_scenario",
+        "multi_turn_interaction",
+        "performance_efficiency",
+    }
+    assert official["sections"]["basic_recommendation"]["max_score"] == 20
+    assert official["sections"]["complex_scenario"]["max_score"] == 20
+    assert official["sections"]["multi_turn_interaction"]["max_score"] == 30
+    assert official["sections"]["performance_efficiency"]["max_score"] == 30
+    assert official["top_issues"]
+    assert official["recommendations"]
+
+
 def test_run_audit_includes_nutrition_evaluation_details():
     scenario = {
         **PASSING_SCENARIO,
@@ -108,6 +128,10 @@ def test_agent_generated_batch_reports_hard_constraint_passes_separately_from_ad
     assert report["summary"]["failed"] == 0
     assert report["summary"]["passed"] == 50
     assert advisory_count <= 32
+    official = report["summary"]["official_report"]
+    assert official["total_score"] >= 70
+    assert official["sections"]["basic_recommendation"]["score"] == 20
+    assert official["sections"]["performance_efficiency"]["score"] == 30
 
 
 def test_audit_job_manager_runs_background_job_to_completion():
@@ -130,6 +154,7 @@ def test_audit_job_manager_runs_background_job_to_completion():
     assert current["progress"]["completed"] == 2
     assert current["summary"]["passed"] == 1
     assert current["summary"]["failed"] == 1
+    assert current["summary"]["official_report"]["max_score"] == 100
     assert len(current["records"]) == 2
 
     jobs = manager.list_jobs()
@@ -139,6 +164,7 @@ def test_audit_job_manager_runs_background_job_to_completion():
 
 def main():
     test_run_audit_reports_pass_and_failure_details()
+    test_run_audit_includes_official_100_point_report()
     test_run_audit_includes_nutrition_evaluation_details()
     test_agent_generated_nutrition_targets_are_advisory_not_blocking()
     test_agent_generated_batch_reports_hard_constraint_passes_separately_from_advisories()

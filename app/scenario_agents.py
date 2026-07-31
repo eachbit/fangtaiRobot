@@ -100,8 +100,8 @@ class CandidateReviewAgent:
 def generate_reviewed_candidates(seed: int, count: int) -> list[dict[str, Any]]:
     if count < 1:
         raise ValueError("count must be positive")
-    if count > 200:
-        raise ValueError("count must be at most 200 for interactive jobs")
+    if count > 1000:
+        raise ValueError("count must be at most 1000 for interactive jobs")
     generator = CustomerScenarioAgent(seed)
     reviewer = CandidateReviewAgent()
     return [reviewer.review(generator.generate(index)) for index in range(count)]

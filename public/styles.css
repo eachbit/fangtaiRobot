@@ -291,6 +291,83 @@ ul {
   color: var(--bad);
 }
 
+.official-report {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #b8d8c7;
+  border-radius: 6px;
+  background: #f1f8f4;
+}
+
+.official-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.official-head span,
+.official-head small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.official-head strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--accent-dark);
+  font-size: 28px;
+}
+
+.official-sections {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.official-section-title {
+  font-size: 13px;
+}
+
+.official-section {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.official-section strong {
+  display: block;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.official-section span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.official-notes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.official-notes strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.official-notes ul {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 .progress-track {
   overflow: hidden;
   height: 8px;
@@ -465,7 +542,9 @@ ul {
   .audit-actions,
   .audit-grid,
   .audit-overview,
-  .nutrition-summary {
+  .nutrition-summary,
+  .official-sections,
+  .official-notes {
     grid-template-columns: 1fr;
     min-width: 0;
   }

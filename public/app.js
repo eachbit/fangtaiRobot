@@ -166,7 +166,7 @@ function buildAuditRequest() {
   if (source !== "agent_generated") {
     return {};
   }
-  const count = clampNumber(Number($("auditCount").value || 10), 1, 200);
+  const count = clampNumber(Number($("auditCount").value || 10), 1, 1000);
   const seed = Number($("auditSeed").value || 20260725);
   $("auditCount").value = String(count);
   $("auditSeed").value = String(Number.isFinite(seed) ? seed : 20260725);
@@ -237,11 +237,65 @@ function renderAuditJob(job) {
     <div class="audit-stat pass"><strong>${job.summary.passed}</strong><span>通过</span></div>
     <div class="audit-stat fail"><strong>${job.summary.failed}</strong><span>失败</span></div>
     <div class="audit-stat"><strong>${job.summary.duration_ms}ms</strong><span>耗时</span></div>
+    ${renderOfficialReport(job.summary.official_report)}
   `;
   $("auditRecords").innerHTML = job.records && job.records.length
     ? job.records.map(renderAuditRecord).join("")
     : "<div class=\"audit-empty\">任务运行后会在这里显示每个场景的询问、回答和查错结果。</div>";
   setAuditButtons(["queued", "running", "canceling"].includes(job.status));
+}
+
+function renderOfficialReport(report) {
+  if (!report) {
+    return "";
+  }
+  const sections = report.sections || {};
+  const sectionItems = [
+    ["basic_recommendation", "基础推荐"],
+    ["complex_scenario", "复杂场景"],
+    ["multi_turn_interaction", "多轮交互"],
+    ["performance_efficiency", "性能效率"],
+  ].map(([key, label]) => {
+    const section = sections[key] || { score: 0, max_score: 0, metrics: {} };
+    return `
+      <div class="official-section">
+        <strong>${section.score}/${section.max_score}</strong>
+        <span>${label}</span>
+      </div>
+    `;
+  }).join("");
+  const issues = (report.top_issues || [])
+    .filter((item) => item.count > 0)
+    .slice(0, 3)
+    .map((item) => `<li>${escapeHtml(item.issue)} × ${item.count}</li>`)
+    .join("");
+  const recommendations = (report.recommendations || [])
+    .slice(0, 2)
+    .map((item) => `<li>${escapeHtml(item)}</li>`)
+    .join("");
+  return `
+    <div class="official-report">
+      <div class="official-head">
+        <div>
+          <span>官方评分</span>
+          <strong>${report.total_score}/${report.max_score}</strong>
+        </div>
+        <small>${report.completed_count}/${report.record_count} 条已评测</small>
+      </div>
+      <strong class="official-section-title">四项得分</strong>
+      <div class="official-sections" aria-label="四项得分">${sectionItems}</div>
+      <div class="official-notes">
+        <div>
+          <strong>高频问题</strong>
+          <ul>${issues || "<li>暂无硬失败</li>"}</ul>
+        </div>
+        <div>
+          <strong>下一步建议</strong>
+          <ul>${recommendations || "<li>继续扩大复杂健康场景覆盖</li>"}</ul>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function renderAuditJobs(jobs) {

@@ -61,10 +61,18 @@ def test_generated_health_goals_are_visible_in_dialog_text():
             assert goal in joined, f"{candidate['candidate_id']} hides health goal {goal}"
 
 
+def test_generated_candidates_support_large_scale_batches():
+    candidates = generate_reviewed_candidates(seed=20260725, count=250)
+
+    assert len(candidates) == 250
+    assert candidates[0]["candidate_id"] != candidates[-1]["candidate_id"]
+
+
 def main():
     test_customer_and_review_agents_preserve_ground_truth()
     test_reviewed_candidates_convert_to_auditable_scenarios_reproducibly()
     test_generated_health_goals_are_visible_in_dialog_text()
+    test_generated_candidates_support_large_scale_batches()
     print("ok: scenario generation and review agents")
 
 

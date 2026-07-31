@@ -56,6 +56,7 @@ def test_audit_job_http_api_starts_and_reports_job():
 
         assert current["status"] == "completed"
         assert current["summary"]["total"] == 1
+        assert current["summary"]["official_report"]["max_score"] == 100
         assert current["records"][0]["name"] == "接口审计-花生过敏"
         assert current["records"][0]["answer"]
 
@@ -93,6 +94,7 @@ def test_audit_job_http_api_can_start_agent_generated_job():
 
         assert current["status"] == "completed"
         assert current["summary"]["total"] == 10
+        assert current["summary"]["official_report"]["max_score"] == 100
         assert current["records"][0]["debug"]["source"] == "agent_generated"
         assert "agent_review" in current["records"][0]["debug"]
     finally:
