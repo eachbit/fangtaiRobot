@@ -120,6 +120,15 @@ def main():
     assert 0 <= nutrition["confidence"]["coverage_ratio"] <= 1
     assert nutrition_result["score_card"]["nutrition_balance"] in {"high", "medium", "low"}
 
+    nutrition_targeted = recommend(None, ["我有高血压，也想减脂，推荐4道菜，尽量清淡一点"])
+    targeted = nutrition_targeted["nutrition"]["per_person"]
+    assert len(nutrition_targeted["menu"]) == 4
+    assert "降压" in nutrition_targeted["constraints"]["health_goals"]
+    assert "减脂" in nutrition_targeted["constraints"]["health_goals"]
+    assert 350 <= targeted["kcal"] <= 900
+    assert targeted["sodium_mg"] <= 800
+    assert targeted["fat_g"] <= 35
+
     print(f"ok: {len(recipes)} recipes, {len(users)} users, {len(cases)} dialog cases")
 
 

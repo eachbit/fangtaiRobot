@@ -13,7 +13,7 @@ def plan_meal(
     user: UserProfile | None,
     previous_menu_ids: list[int] | None = None,
 ) -> dict:
-    ranked = rank_recipes(recipes, constraints, user, limit=48)
+    ranked = rank_recipes(recipes, constraints, user, limit=120)
     menu_size = _menu_size(constraints)
     selected = _revision_select(recipes, ranked, constraints, user, menu_size, previous_menu_ids)
     if not previous_menu_ids:
@@ -188,7 +188,7 @@ def _nutrition_refine_select(ranked: list[dict], selected: list[dict], constrain
     selected = list(selected)
     used_names = {item["recipe"].name for item in selected}
     best_penalty = _nutrition_penalty(selected, constraints)
-    for _ in range(3):
+    for _ in range(5):
         improved = False
         for index, current in enumerate(list(selected)):
             replacement = _best_nutrition_replacement(
@@ -223,7 +223,8 @@ def _best_nutrition_replacement(
     current = selected[index]
     current_category = classify_recipe(current["recipe"])
     best: tuple[float, dict] | None = None
-    for item in ranked[:48]:
+    min_delta = _nutrition_improvement_delta(constraints)
+    for item in ranked[:96]:
         recipe = item["recipe"]
         if recipe.name in used_names:
             continue
@@ -232,7 +233,7 @@ def _best_nutrition_replacement(
         trial = list(selected)
         trial[index] = item
         penalty = _nutrition_penalty(trial, constraints)
-        if penalty + 0.05 >= current_penalty:
+        if penalty + min_delta >= current_penalty:
             continue
         if best is None or penalty < best[0]:
             best = (penalty, item)
@@ -248,20 +249,19 @@ def _nutrition_penalty(selected: list[dict], constraints: Constraints) -> float:
 
     kcal = per_person["kcal"]
     if kcal < kcal_low:
-        penalty += (kcal_low - kcal) / 80
+        penalty += (kcal_low - kcal) / 60
     if kcal > kcal_high:
-        penalty += (kcal - kcal_high) / 120
+        penalty += (kcal - kcal_high) / 90
 
-    sodium_limit = 800 if "降压" in constraints.health_goals else 1200
+    sodium_limit = 760 if "降压" in constraints.health_goals else 1150
     sodium = per_person["sodium_mg"]
     if sodium > sodium_limit:
-        penalty += (sodium - sodium_limit) / 500
+        penalty += (sodium - sodium_limit) / 260
 
+    fat_limit = 33 if "减脂" in constraints.health_goals else 38
     fat = per_person["fat_g"]
-    if fat > 38:
-        penalty += (fat - 38) / 12
-    if "减脂" in constraints.health_goals and fat > 35:
-        penalty += (fat - 35) / 8
+    if fat > fat_limit:
+        penalty += (fat - fat_limit) / 7
 
     protein = per_person["protein_g"]
     if "增肌" in constraints.health_goals and protein < 20:
@@ -269,11 +269,17 @@ def _nutrition_penalty(selected: list[dict], constraints: Constraints) -> float:
 
     sugar = per_person["sugar_g"]
     if "控糖" in constraints.health_goals and sugar > 35:
-        penalty += (sugar - 35) / 10
+        penalty += (sugar - 35) / 7
 
     if nutrition["balance_level"] == "low":
         penalty += 1.0
     return penalty
+
+
+def _nutrition_improvement_delta(constraints: Constraints) -> float:
+    if constraints.health_goals:
+        return 0.005
+    return 0.03
 
 
 def _selected_item_to_menu(item: dict) -> dict:

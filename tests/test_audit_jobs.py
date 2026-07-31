@@ -127,7 +127,7 @@ def test_agent_generated_batch_reports_hard_constraint_passes_separately_from_ad
     assert report["summary"]["total"] == 50
     assert report["summary"]["failed"] == 0
     assert report["summary"]["passed"] == 50
-    assert advisory_count <= 32
+    assert advisory_count <= 10
     official = report["summary"]["official_report"]
     assert official["total_score"] >= 70
     assert official["sections"]["basic_recommendation"]["score"] == 20
