@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from app.agent import get_dialog_cases, get_recipes, get_users, recommend
 from app.audit_jobs import manager as audit_jobs
 from app.scenario_agents import agent_candidates_to_audit_scenarios, generate_reviewed_candidates
+from app.session_store import store
 
 
 ROOT = Path(__file__).resolve().parent
@@ -31,6 +32,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/audit/jobs":
             self._json({"jobs": audit_jobs.list_jobs()})
+            return
+        session_id = _session_history_id(parsed.path)
+        if session_id:
+            try:
+                self._json(store.history(session_id))
+            except KeyError:
+                self._json({"error": "session_not_found"}, status=404)
             return
         job_id = _audit_job_id(parsed.path)
         if job_id:
@@ -75,18 +83,25 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
             user_id = body.get("user_id")
             session_id = body.get("session_id")
+            rollback_to = body.get("rollback_to")
             messages = body.get("messages")
             if messages is None and body.get("message"):
                 messages = [body["message"]]
             if not isinstance(messages, list) or not all(isinstance(item, str) for item in messages):
                 self._json({"error": "messages must be a string list"}, status=400)
                 return
+            if rollback_to is not None and (type(rollback_to) is not int or rollback_to < 1):
+                self._json({"error": "rollback_version_not_found"}, status=400)
+                return
             result = recommend(
                 int(user_id) if user_id not in (None, "") else None,
                 messages,
                 session_id=session_id if session_id not in ("", None) else None,
+                rollback_to=rollback_to,
             )
             self._json(result)
+        except ValueError as exc:
+            self._json({"error": str(exc)}, status=400)
         except Exception as exc:
             self._json({"error": "internal_error", "detail": str(exc)}, status=500)
 
@@ -146,6 +161,16 @@ def _audit_job_id(path: str) -> str | None:
     if not suffix or "/" in suffix:
         return None
     return suffix
+
+
+def _session_history_id(path: str) -> str | None:
+    prefix = "/api/sessions/"
+    suffix = path[len(prefix):] if path.startswith(prefix) else ""
+    marker = "/history"
+    if not suffix.endswith(marker):
+        return None
+    session_id = suffix[: -len(marker)].strip("/")
+    return session_id or None
 
 
 def _audit_cancel_job_id(path: str) -> str | None:

@@ -2,6 +2,8 @@ const state = {
   users: [],
   cases: [],
   sessionId: null,
+  menuVersion: null,
+  history: [],
   auditJobId: null,
   auditPollTimer: null,
 };
@@ -62,6 +64,7 @@ function bindEvents() {
     }
   });
   $("recommendBtn").addEventListener("click", recommend);
+  $("rollbackBtn").addEventListener("click", rollbackToVersion);
   $("auditStartBtn").addEventListener("click", startAuditJob);
   $("auditCancelBtn").addEventListener("click", cancelAuditJob);
   $("auditRefreshBtn").addEventListener("click", loadAuditJobs);
@@ -118,8 +121,34 @@ async function recommend() {
   }
 }
 
+async function rollbackToVersion() {
+  const target = Number($("rollbackSelect").value);
+  if (!state.sessionId || !Number.isInteger(target)) return;
+  $("rollbackBtn").disabled = true;
+  try {
+    const result = await api("/api/recommend", {
+      method: "POST",
+      body: JSON.stringify({
+        user_id: $("userSelect").value ? Number($("userSelect").value) : null,
+        session_id: state.sessionId,
+        messages: [],
+        rollback_to: target,
+      }),
+    });
+    renderResult(result);
+  } catch (error) {
+    alert(`恢复版本失败：${error.message}`);
+    renderVersionHistory();
+  }
+}
+
 function renderResult(result) {
   state.sessionId = result.session_id || state.sessionId;
+  state.menuVersion = result.menu_version || null;
+  state.history = result.history || [];
+  if (Array.isArray(result.messages)) {
+    $("messages").value = result.messages.join("\n");
+  }
   $("answer").textContent = result.answer || "";
   $("constraints").textContent = JSON.stringify(result.constraints, null, 2);
   $("menu").innerHTML = result.menu.map(renderRecipe).join("");
@@ -127,9 +156,39 @@ function renderResult(result) {
     .map(([key, value]) => `<div class="score-item"><strong>${labelOf(key)}</strong><br>${value}</div>`)
     .join("");
   renderNutrition(result.nutrition);
+  renderVersionHistory();
   $("warnings").innerHTML = result.warnings.length
     ? result.warnings.map((warning) => `<li>${warning}</li>`).join("")
     : "<li>无硬性风险提示</li>";
+}
+
+function renderVersionHistory() {
+  const panel = $("versionPanel");
+  if (!state.sessionId || !state.history.length) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+  $("menuVersion").textContent = `v${state.menuVersion}`;
+  const select = $("rollbackSelect");
+  select.innerHTML = "";
+  state.history
+    .filter((item) => item.version !== state.menuVersion)
+    .slice()
+    .reverse()
+    .forEach((item) => {
+      const option = document.createElement("option");
+      option.value = String(item.version);
+      option.textContent = `v${item.version} · ${item.operation === "rollback" ? "回滚版本" : "历史菜单"}`;
+      select.appendChild(option);
+    });
+  $("rollbackBtn").disabled = !select.options.length;
+  $("versionHistory").innerHTML = state.history
+    .map((item) => {
+      const source = item.source_version ? `，来源 v${item.source_version}` : "";
+      return `<span>v${item.version} · ${item.operation === "rollback" ? "回滚" : "推荐"}${source}</span>`;
+    })
+    .join("");
 }
 
 function renderNutrition(nutrition) {

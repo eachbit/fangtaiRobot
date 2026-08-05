@@ -60,6 +60,47 @@ Content-Type: application/json
 }
 ```
 
+返回结果会包含 `session_id`、`menu_version`、`history`、`changes`、`nutrition`、`score_card`、`warnings` 和 `answer`。
+
+多轮继续对话：
+
+```json
+{
+  "user_id": 3,
+  "session_id": "上一次响应返回的 session_id",
+  "messages": [
+    "我不吃虾，其他菜尽量别动。"
+  ]
+}
+```
+
+不带 `session_id` 时，也可以提交完整历史。系统会按轮次重建菜单：
+
+```json
+{
+  "messages": [
+    "4个人吃午餐，推荐4道菜。",
+    "我不吃鸡蛋，其他菜尽量别动。"
+  ]
+}
+```
+
+恢复历史菜单版本：
+
+```json
+{
+  "session_id": "上一次响应返回的 session_id",
+  "messages": [],
+  "rollback_to": 1
+}
+```
+
+也可以直接输入“撤销刚才修改”或“回到第1版”。回滚不会删除历史，而是创建一个新的当前版本。查看历史版本：
+
+```http
+GET /api/sessions/{session_id}/history
+```
+
 ## Test
 
 运行核心逻辑自测：

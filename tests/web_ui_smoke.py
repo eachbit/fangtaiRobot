@@ -32,6 +32,10 @@ def main():
 
             expect(page.locator("#status")).to_contain_text("2000")
             expect(page.locator("#auditStartBtn")).to_be_enabled()
+            page.locator("#messages").fill("推荐3道晚餐")
+            page.locator("#recommendBtn").click()
+            expect(page.locator("#menuVersion")).to_contain_text("v1", timeout=10000)
+            expect(page.locator("#versionHistory")).to_contain_text("v1")
             page.locator("#auditStartBtn").click()
             expect(page.locator("#auditRecords")).to_contain_text("expected_count", timeout=15000)
             expect(page.locator("#auditOverview")).to_contain_text("官方评分", timeout=15000)

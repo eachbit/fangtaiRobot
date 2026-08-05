@@ -42,6 +42,18 @@
       <section class="panel">
         <h2>推荐菜单</h2>
         <div id="answer" class="answer"></div>
+        <div id="versionPanel" class="version-panel" hidden>
+          <div>
+            <strong>菜单版本</strong>
+            <span id="menuVersion">尚未生成</span>
+          </div>
+          <div class="version-actions">
+            <label for="rollbackSelect">恢复到历史版本</label>
+            <select id="rollbackSelect"></select>
+            <button id="rollbackBtn" class="secondary" disabled>恢复选中版本</button>
+          </div>
+          <div id="versionHistory" class="version-history"></div>
+        </div>
         <div id="menu" class="menu"></div>
       </section>
 

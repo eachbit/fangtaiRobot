@@ -140,6 +140,55 @@ def main():
     assert targeted["sodium_mg"] <= 800
     assert targeted["fat_g"] <= 35
 
+    replay_messages = ["4个人吃午餐，推荐4道菜", "我不吃鸡蛋，其他菜尽量别动"]
+    replayed = recommend(None, replay_messages)
+    replay_first = recommend(None, [replay_messages[0]])
+    replay_second = recommend(None, [replay_messages[1]], session_id=replay_first["session_id"])
+    assert [item["id"] for item in replayed["menu"]] == [item["id"] for item in replay_second["menu"]]
+    assert replayed["changes"] == replay_second["changes"]
+    assert replayed["menu_version"] == 2
+    assert replayed["messages"] == replay_messages
+    assert [item["version"] for item in replayed["history"]] == [1, 2]
+
+    rollback_first = recommend(None, ["4个人吃午餐，推荐4道菜"])
+    rollback_second = recommend(
+        None,
+        ["我不吃鸡蛋，其他菜尽量别动"],
+        session_id=rollback_first["session_id"],
+    )
+    rollback_result = recommend(
+        None,
+        [],
+        session_id=rollback_second["session_id"],
+        rollback_to=1,
+    )
+    assert rollback_result["changes"]["mode"] == "rollback"
+    assert rollback_result["changes"]["source_version"] == 1
+    assert rollback_result["menu_version"] == 3
+    assert len(rollback_result["history"]) == 3
+
+    rollback_next = recommend(
+        None,
+        ["我不吃虾，其他菜尽量别动"],
+        session_id=rollback_result["session_id"],
+    )
+    assert rollback_next["menu_version"] == 4
+    assert rollback_next["changes"]["mode"] == "minimal_revision"
+
+    undo_first = recommend(None, ["推荐3道晚餐"])
+    undo_second = recommend(
+        None,
+        ["我不吃虾，其他菜尽量别动"],
+        session_id=undo_first["session_id"],
+    )
+    undo_result = recommend(
+        None,
+        ["撤销刚才修改"],
+        session_id=undo_second["session_id"],
+    )
+    assert undo_result["changes"]["mode"] == "rollback"
+    assert undo_result["changes"]["source_version"] == 1
+
     print(f"ok: {len(recipes)} recipes, {len(users)} users, {len(cases)} dialog cases")
 
 

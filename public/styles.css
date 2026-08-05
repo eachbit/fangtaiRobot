@@ -154,6 +154,60 @@ button:disabled {
   color: var(--muted);
 }
 
+.version-panel {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.6fr) minmax(220px, 1.4fr);
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid #b8d8c7;
+  border-radius: 6px;
+  background: #f1f8f4;
+}
+
+.version-panel strong,
+.version-panel span {
+  display: block;
+}
+
+.version-panel > div > span {
+  margin-top: 6px;
+  color: var(--accent-dark);
+  font-size: 20px;
+}
+
+.version-actions {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) minmax(130px, 1fr);
+  gap: 8px;
+}
+
+.version-actions label {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.version-actions select,
+.version-actions button {
+  margin-top: 0;
+}
+
+.version-history {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.version-history span {
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: #e3f0e8;
+  color: var(--accent-dark);
+  font-size: 12px;
+}
+
 .menu {
   display: grid;
   gap: 12px;
@@ -537,6 +591,15 @@ ul {
   .panel-title-row,
   .audit-record header {
     flex-direction: column;
+  }
+
+  .version-panel,
+  .version-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .version-actions label {
+    grid-column: auto;
   }
 
   .audit-actions,
