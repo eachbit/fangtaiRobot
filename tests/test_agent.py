@@ -17,6 +17,16 @@ def main():
     assert len(users) == 50, f"expected 50 users, got {len(users)}"
     assert cases, "dialog cases should not be empty"
 
+    detailed_user = next(user for user in users if user.id == 3)
+    assert detailed_user.height_cm == 180.1
+    assert detailed_user.weight_kg == 78.2
+    assert detailed_user.bmi == 24.1
+    assert detailed_user.health_metrics["空腹血糖_mmol/L"] == 7.3
+    assert all(
+        {"身高_cm", "体重_kg", "BMI", "体检指标"}.issubset(user.raw)
+        for user in users
+    ), "all users must come from the detailed health-profile schema"
+
     for case in cases:
         result = recommend(1, case["user_messages"])
         assert result["menu"], f"case {case['id']} returned empty menu"

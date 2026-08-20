@@ -11,6 +11,7 @@ DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 RECIPES_FILE = DATA_DIR / "recipes_sample_2000.csv"
 USERS_FILE = DATA_DIR / "50个用户健康档案（脱敏）.json"
 CASES_FILE = DATA_DIR / "对话用例.json"
+DETAILED_USER_FIELDS = ("身高_cm", "体重_kg", "BMI", "体检指标")
 
 
 def split_labels(value: str) -> list[str]:
@@ -38,6 +39,12 @@ def load_users(path: Path = USERS_FILE) -> list[UserProfile]:
     data = json.loads(path.read_text(encoding="utf-8"))
     users: list[UserProfile] = []
     for item in data:
+        missing_fields = [field for field in DETAILED_USER_FIELDS if field not in item]
+        if missing_fields:
+            raise ValueError(
+                "用户健康档案必须使用详细版本，缺少字段："
+                + "、".join(missing_fields)
+            )
         users.append(
             UserProfile(
                 id=int(item["id"]),
@@ -49,6 +56,10 @@ def load_users(path: Path = USERS_FILE) -> list[UserProfile]:
                 taste_preference=item.get("口味偏好", ""),
                 allergens=list(item.get("过敏食材") or []),
                 health_goals=list(item.get("健康需求") or []),
+                height_cm=_optional_float(item.get("身高_cm")),
+                weight_kg=_optional_float(item.get("体重_kg")),
+                bmi=_optional_float(item.get("BMI")),
+                health_metrics=dict(item.get("体检指标") or {}),
                 raw=item,
             )
         )
@@ -59,3 +70,9 @@ def load_dialog_cases(path: Path = CASES_FILE) -> list[dict]:
     if not path.exists():
         return []
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _optional_float(value) -> float | None:
+    if value in (None, ""):
+        return None
+    return float(value)

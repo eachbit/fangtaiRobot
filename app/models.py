@@ -22,6 +22,10 @@ class UserProfile:
     taste_preference: str
     allergens: list[str]
     health_goals: list[str]
+    height_cm: float | None = None
+    weight_kg: float | None = None
+    bmi: float | None = None
+    health_metrics: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
 
 
