@@ -132,6 +132,22 @@ def main():
     egg_allergy = recommend(None, ["4个人吃午餐，先推荐4道菜。", "我对鸡蛋过敏，其他菜尽量别动。"])
     assert "鸡蛋" in egg_allergy["constraints"]["allergens"]
 
+    acceptance = recommend(None, ["4个人吃午餐，先推荐4道菜。", "我不吃鸡蛋，其他菜尽量别动。"])
+    acceptance_nutrition = acceptance["nutrition"]
+    assert acceptance["constraints"]["meal"] == "午餐"
+    assert acceptance["constraints"]["people_count"] == 4
+    assert acceptance["constraints"]["requested_dish_count"] == 4
+    assert "鸡蛋" in acceptance["constraints"]["avoid_ingredients"]
+    acceptance_text = " ".join(
+        item["name"] + item["ingredients"] + " ".join(item["labels"])
+        for item in acceptance["menu"]
+    )
+    assert "鸡蛋" not in acceptance_text
+    assert acceptance["changes"]["change_count"] == 1
+    assert acceptance_nutrition["per_person"]["kcal"] >= 250
+    assert acceptance_nutrition["per_person"]["protein_g"] >= 12
+    assert acceptance_nutrition["confidence"]["level"] in {"medium", "high"}
+
     nutrition_result = recommend(None, ["四个人晚饭，推荐4道菜"])
     nutrition = nutrition_result["nutrition"]
     assert nutrition["table"]["dish_count"] == len(nutrition_result["menu"])

@@ -228,7 +228,11 @@ def _best_nutrition_replacement(
         recipe = item["recipe"]
         if recipe.name in used_names:
             continue
-        if len(selected) >= 3 and classify_recipe(recipe) != current_category:
+        if (
+            len(selected) >= 3
+            and not constraints.health_goals
+            and classify_recipe(recipe) != current_category
+        ):
             continue
         trial = list(selected)
         trial[index] = item

@@ -4,7 +4,7 @@
 
 ## Project Goal
 
-构建一个“健康约束可验证”的个性化膳食规划 Agent。系统采用官方菜谱库检索、用户健康档案约束、规则校验和自然语言解释生成，避免直接让大模型幻觉生成不存在的菜品。
+构建一个“健康约束可验证”的个性化膳食规划 Agent。系统采用官方菜谱库检索、用户健康档案约束、规则校验和本地规则解释生成，避免直接让大模型幻觉生成不存在的菜品；最终运行链路不依赖外部模型或外网 API。
 
 ## Planned Deliverables
 
@@ -62,6 +62,16 @@ Content-Type: application/json
 
 返回结果会包含 `session_id`、`menu_version`、`history`、`changes`、`nutrition`、`score_card`、`warnings` 和 `answer`。
 
+关键响应字段：
+
+- `menu`：推荐菜品列表，所有 `name` 均来自本地官方菜谱库。
+- `constraints`：从健康档案和多轮消息中抽取的餐次、人数、菜数、过敏、忌口、口味、健康目标等结构化约束。
+- `nutrition`：整桌和人均热量、蛋白质、脂肪、碳水、钠等离线估算结果，同时保留 `confidence`、`missing_ingredients` 和估算假设。该结果用于竞赛解释和排序，不作为医学诊断。
+- `changes`：多轮修改状态，`mode` 可能为 `new_menu`、`minimal_revision` 或 `rollback`，并给出保留、替换和修改数量。
+- `score_card`：菜谱真实性、过敏/忌口、健康、口味、场景、最小修改和营养状态的结构化评分。
+- `warnings`：健康风险、约束冲突或营养估算提示。
+- `answer`：面向用户的中文推荐说明，由本地规则生成。
+
 多轮继续对话：
 
 ```json
@@ -101,13 +111,50 @@ Content-Type: application/json
 GET /api/sessions/{session_id}/history
 ```
 
+辅助接口：
+
+```http
+GET /api/health
+GET /api/users
+GET /api/cases
+POST /api/audit/jobs
+GET /api/audit/jobs
+GET /api/audit/jobs/{job_id}
+POST /api/audit/jobs/{job_id}/cancel
+```
+
+`/api/audit/jobs` 只用于本地开发和演示控制台批测，不是推荐链路的外部依赖。
+
+当前重点验收输入：
+
+```json
+{
+  "messages": [
+    "4个人吃午餐，先推荐4道菜。",
+    "我不吃鸡蛋，其他菜尽量别动。"
+  ]
+}
+```
+
+验收要点：返回 4 道官方菜谱，`people_count=4`、`requested_dish_count=4`，`avoid_ingredients` 包含鸡蛋相关约束，菜单食材和标签中不得命中鸡蛋，追加忌口时应进入 `minimal_revision` 并尽量只替换必要菜品。
+
 ## Test
 
-运行核心逻辑自测：
+运行完整本地验证：
 
 ```powershell
 python tests/test_agent.py
+python tests/test_scenario_agents.py
+python tests/test_audit_jobs.py
+python tests/test_server_api.py
+python tests/web_ui_smoke.py
+python tests/test_docker_contract.py
+python tests/audit_recommendations.py
+python -m compileall -q app server.py tests
+git diff --check
 ```
+
+这些测试覆盖官方菜谱真实性、过敏/忌口过滤、菜品数量、多人健康约束、营养估算、多轮菜单保留、上下文回放、版本回滚、网页演示和 Docker 文件契约。
 
 ## Docker
 
@@ -136,6 +183,25 @@ curl http://127.0.0.1:8000/api/health
 ```powershell
 docker save fangtai-robot:latest -o fangtai-robot.tar
 ```
+
+## Public API Deployment
+
+服务默认监听 `HOST` 和 `PORT` 环境变量，本地默认为 `127.0.0.1:8000`，Docker 内默认为 `0.0.0.0:8000`。
+
+此前最后已知公网地址：
+
+```text
+http://47.116.110.131:8000/
+```
+
+交付前必须重新验证公网接口：
+
+```powershell
+curl.exe http://47.116.110.131:8000/api/health
+curl.exe -X POST http://47.116.110.131:8000/api/recommend -H "Content-Type: application/json" -d "{\"messages\":[\"4个人吃午餐，先推荐4道菜。\",\"我不吃鸡蛋，其他菜尽量别动。\"]}"
+```
+
+公网部署建议使用 `systemd` 或等价后台服务管理，避免 SSH 断开后服务退出。不要将服务器密码、API Key 或数据文件提交到公开仓库。
 
 ## Repository
 
