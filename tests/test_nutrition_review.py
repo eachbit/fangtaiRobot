@@ -156,6 +156,29 @@ def test_llm_nutrition_review_skips_external_call_for_low_risk_menu():
     assert review["llm_assist"]["skipped"] == "low_risk"
 
 
+def test_llm_nutrition_review_skips_external_call_for_general_medium_balance_menu():
+    constraints = Constraints(meal="晚餐", people_count=1)
+    nutrition = _sample_nutrition()
+    nutrition["balance_level"] = "medium"
+    nutrition["per_person"]["sodium_mg"] = 700
+    nutrition["per_person"]["fiber_g"] = 6
+    nutrition["per_person"]["fat_g"] = 28
+
+    def unexpected_provider(payload):
+        raise AssertionError("provider should not be called")
+
+    review = build_nutrition_review(
+        _sample_menu(),
+        nutrition,
+        constraints,
+        provider=unexpected_provider,
+        enabled=True,
+    )
+
+    assert review["source"] == "local"
+    assert review["llm_assist"]["skipped"] == "low_risk"
+
+
 def test_nutrition_review_timeout_can_use_dedicated_env_var():
     import os
 
@@ -182,6 +205,7 @@ def main():
     test_llm_nutrition_review_failure_keeps_local_review()
     test_llm_nutrition_review_only_marks_fields_returned_by_model()
     test_llm_nutrition_review_skips_external_call_for_low_risk_menu()
+    test_llm_nutrition_review_skips_external_call_for_general_medium_balance_menu()
     test_nutrition_review_timeout_can_use_dedicated_env_var()
     print("ok: nutrition review")
 

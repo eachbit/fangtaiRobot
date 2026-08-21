@@ -119,8 +119,6 @@ def _should_request_llm_review(
 ) -> bool:
     if constraints.health_goals:
         return True
-    if nutrition.get("balance_level") != "high":
-        return True
     severe_flags = set(local_review.get("risk_flags") or []) - {"fiber_low"}
     return bool(severe_flags)
 

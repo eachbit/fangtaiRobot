@@ -38,6 +38,13 @@ def augment_constraints_with_llm(
     constraints: Constraints,
     provider: Provider | None = None,
 ) -> tuple[Constraints, dict[str, Any]]:
+    if provider is None and not _should_request_llm_assist(messages, constraints):
+        return deepcopy(constraints), {
+            "enabled": is_llm_enabled(),
+            "used": False,
+            "error": None,
+            "skipped": "low_uncertainty",
+        }
     provider = provider or request_llm_constraint_patch
     updated = deepcopy(constraints)
     try:
@@ -86,6 +93,23 @@ def request_llm_constraint_patch(messages: list[str]) -> dict[str, Any] | None:
         data = json.loads(response.read().decode("utf-8"))
     content = data["choices"][0]["message"]["content"]
     return _parse_json_object(content)
+
+
+def _should_request_llm_assist(messages: list[str], constraints: Constraints) -> bool:
+    text = "\n".join(messages)
+    if constraints.people_count is None and any(
+        word in text for word in ["大人", "成年人", "孩子", "小孩", "儿童", "一家", "几个人", "几位", "位"]
+    ):
+        return True
+    if constraints.requested_dish_count is None and any(
+        word in text for word in ["几道", "几个菜", "几份", "整桌", "套餐"]
+    ):
+        return True
+    if constraints.meal is None and any(word in text for word in ["早午", "午晚", "这一顿", "这顿"]):
+        return True
+    if any(word in text for word in ["不确定", "随便", "看着办", "都可以", "不知道"]):
+        return True
+    return False
 
 
 def is_llm_enabled() -> bool:

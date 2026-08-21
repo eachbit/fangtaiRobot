@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.constraints import extract_constraints
-from app.llm_assist import augment_constraints_with_llm
+from app.llm_assist import _should_request_llm_assist, augment_constraints_with_llm
 
 
 def test_llm_patch_fills_missing_people_and_dish_count_without_overriding_hard_rules():
@@ -64,10 +64,27 @@ def test_llm_patch_cannot_upgrade_local_dislike_to_allergy():
     assert "鸡蛋" not in augmented.allergens
 
 
+def test_llm_assist_skips_complete_low_uncertainty_requests():
+    constraints = extract_constraints(["4个人吃午餐，先推荐4道菜。", "我不吃鸡蛋，其他菜尽量别动。"])
+
+    assert _should_request_llm_assist(
+        ["4个人吃午餐，先推荐4道菜。", "我不吃鸡蛋，其他菜尽量别动。"],
+        constraints,
+    ) is False
+
+
+def test_llm_assist_keeps_complex_people_expression_enabled():
+    constraints = extract_constraints(["两位成年人加一个孩子吃午饭，整桌五道菜，不吃香菜"])
+
+    assert _should_request_llm_assist(["两位成年人加一个孩子吃午饭，整桌五道菜，不吃香菜"], constraints) is True
+
+
 def main():
     test_llm_patch_fills_missing_people_and_dish_count_without_overriding_hard_rules()
     test_llm_patch_failure_keeps_rule_constraints()
     test_llm_patch_cannot_upgrade_local_dislike_to_allergy()
+    test_llm_assist_skips_complete_low_uncertainty_requests()
+    test_llm_assist_keeps_complex_people_expression_enabled()
     print("ok: llm assist")
 
 

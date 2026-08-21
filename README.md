@@ -197,7 +197,7 @@ FANGTAI_LLM_API_KEY=sk-...
 FANGTAI_LLM_MODEL=gpt-5.4-mini
 FANGTAI_LLM_TIMEOUT=2.5
 FANGTAI_LLM_NUTRITION_REVIEW=1
-FANGTAI_LLM_NUTRITION_TIMEOUT=6
+FANGTAI_LLM_NUTRITION_TIMEOUT=3
 ```
 
 外部模型默认只用于补充自然语言约束抽取。设置 `FANGTAI_LLM_NUTRITION_REVIEW=1` 后，会额外辅助 `nutrition_review` 的营养评审话术和建议；可用 `FANGTAI_LLM_NUTRITION_TIMEOUT` 单独控制营养评审等待时间。官方菜谱真实性、过敏/忌口过滤、菜品数量、营养数值、多轮保留和回滚仍由本地规则校验。未配置密钥、请求超时或中转站不可用时，服务会自动回退到完全离线规则链路。
