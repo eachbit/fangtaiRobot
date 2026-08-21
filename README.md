@@ -188,6 +188,17 @@ docker save fangtai-robot:latest -o fangtai-robot.tar
 
 服务默认监听 `HOST` 和 `PORT` 环境变量，本地默认为 `127.0.0.1:8000`，Docker 内默认为 `0.0.0.0:8000`。
 
+可选外部模型辅助：
+
+```bash
+FANGTAI_LLM_BASE_URL=https://api.example.com/
+FANGTAI_LLM_API_KEY=sk-...
+FANGTAI_LLM_MODEL=gpt-4o-mini
+FANGTAI_LLM_TIMEOUT=2.5
+```
+
+外部模型只用于补充自然语言约束抽取；官方菜谱真实性、过敏/忌口过滤、菜品数量、多轮保留和回滚仍由本地规则校验。未配置密钥、请求超时或中转站不可用时，服务会自动回退到完全离线规则链路。
+
 此前最后已知公网地址：
 
 ```text

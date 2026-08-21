@@ -5,6 +5,7 @@ from functools import lru_cache
 
 from .constraints import extract_constraints
 from .data_loader import load_dialog_cases, load_recipes, load_users
+from .llm_assist import augment_constraints_with_llm
 from .models import UserProfile
 from .planner import plan_meal
 from .session_store import new_session_id, store
@@ -53,7 +54,7 @@ def recommend(
             raise ValueError("session_not_found_for_rollback")
         current_version = previous.menu_version
         state = store.rollback(previous.session_id, rollback_target)
-        constraints = extract_constraints(state.messages, user)
+        constraints = _extract_constraints(state.messages, user)
         result = plan_meal(get_recipes(), constraints, user, previous_menu_ids=state.menu_ids)
         result["changes"] = {
             "mode": "rollback",
@@ -83,7 +84,7 @@ def recommend(
     if not turns:
         if not state:
             raise ValueError("messages must not be empty")
-        constraints = extract_constraints(state.messages, user)
+        constraints = _extract_constraints(state.messages, user)
         result = plan_meal(get_recipes(), constraints, user, previous_menu_ids=state.menu_ids)
         return _response(user_id, user, state, constraints, result)
 
@@ -92,7 +93,7 @@ def recommend(
     constraints = None
     for message in turns:
         current_messages.append(message)
-        constraints = extract_constraints(current_messages, user)
+        constraints = _extract_constraints(current_messages, user)
         previous_menu_ids = None if _reset_requested([message]) else current_menu_ids
         result = plan_meal(get_recipes(), constraints, user, previous_menu_ids=previous_menu_ids)
         current_menu_ids = [item["id"] for item in result["menu"]]
@@ -125,6 +126,13 @@ def _response(
         "history": store.history(state.session_id)["history"],
         **result,
     }
+
+
+def _extract_constraints(messages: list[str], user: UserProfile | None):
+    constraints = extract_constraints(messages, user)
+    constraints, meta = augment_constraints_with_llm(messages, constraints)
+    constraints.inferred_profile["llm_assist"] = meta
+    return constraints
 
 
 def _rollback_target(messages: list[str], previous, explicit_target: int | None) -> int | None:
