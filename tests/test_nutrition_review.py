@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.models import Constraints
-from app.nutrition_review import build_nutrition_review
+from app.nutrition_review import _nutrition_timeout, build_nutrition_review
 
 
 def _sample_nutrition():
@@ -156,12 +156,33 @@ def test_llm_nutrition_review_skips_external_call_for_low_risk_menu():
     assert review["llm_assist"]["skipped"] == "low_risk"
 
 
+def test_nutrition_review_timeout_can_use_dedicated_env_var():
+    import os
+
+    old_general = os.environ.get("FANGTAI_LLM_TIMEOUT")
+    old_nutrition = os.environ.get("FANGTAI_LLM_NUTRITION_TIMEOUT")
+    os.environ["FANGTAI_LLM_TIMEOUT"] = "2.5"
+    os.environ["FANGTAI_LLM_NUTRITION_TIMEOUT"] = "6"
+    try:
+        assert _nutrition_timeout() == 6.0
+    finally:
+        if old_general is None:
+            os.environ.pop("FANGTAI_LLM_TIMEOUT", None)
+        else:
+            os.environ["FANGTAI_LLM_TIMEOUT"] = old_general
+        if old_nutrition is None:
+            os.environ.pop("FANGTAI_LLM_NUTRITION_TIMEOUT", None)
+        else:
+            os.environ["FANGTAI_LLM_NUTRITION_TIMEOUT"] = old_nutrition
+
+
 def main():
     test_local_nutrition_review_flags_health_goal_risks_without_llm()
     test_llm_nutrition_review_can_enhance_text_but_not_override_numbers_or_schema()
     test_llm_nutrition_review_failure_keeps_local_review()
     test_llm_nutrition_review_only_marks_fields_returned_by_model()
     test_llm_nutrition_review_skips_external_call_for_low_risk_menu()
+    test_nutrition_review_timeout_can_use_dedicated_env_var()
     print("ok: nutrition review")
 
 

@@ -74,7 +74,7 @@ def is_nutrition_review_enabled() -> bool:
 def request_nutrition_review_patch(payload: dict[str, Any]) -> dict[str, Any] | None:
     api_key = os.environ["FANGTAI_LLM_API_KEY"]
     model = os.environ.get("FANGTAI_LLM_MODEL", "gpt-5.4-mini")
-    timeout = float(os.environ.get("FANGTAI_LLM_TIMEOUT", "2.5"))
+    timeout = _nutrition_timeout()
     request_payload = {
         "model": model,
         "temperature": 0,
@@ -106,6 +106,10 @@ def request_nutrition_review_patch(payload: dict[str, Any]) -> dict[str, Any] | 
         data = json.loads(response.read().decode("utf-8"))
     content = data["choices"][0]["message"]["content"]
     return _parse_json_object(content)
+
+
+def _nutrition_timeout() -> float:
+    return float(os.environ.get("FANGTAI_LLM_NUTRITION_TIMEOUT", os.environ.get("FANGTAI_LLM_TIMEOUT", "2.5")))
 
 
 def _should_request_llm_review(
