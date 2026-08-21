@@ -32,8 +32,10 @@ https://github.com/eachbit/fangtaiRobot.git
 当前已知 Git 状态：
 
 - 分支：`codex/audit-docker-readiness`
-- 相对远程状态：2026-08-21 最后确认本地与 `origin/codex/audit-docker-readiness` 同步，继续开发前仍必须执行 `git status --short --branch` 和 `git log --oneline -8` 确认；不要覆盖用户已有改动。
+- 相对远程状态：2026-08-21 通过 GitHub 网页提交了本文档更新，远端提交为 `8bec6cd docs: refresh project handoff status`；本机 CLI 因代理无法连接 GitHub，暂时保留同内容本地提交 `1044ea2 docs: refresh project handoff status`。继续开发前必须执行 `git status --short --branch`、`git fetch origin codex/audit-docker-readiness` 和 `git log --oneline -8` 确认，再将本地分支对齐到远端；不要覆盖用户已有改动。
 - 最近关键提交：
+  - `8bec6cd docs: refresh project handoff status`（GitHub 网页远端提交）
+  - `1044ea2 docs: refresh project handoff status`（本机同内容提交，待 fetch 后对齐）
   - `4c90370 fix: enforce llm speed gates`
   - `b355a62 feat: add nutrition review timeout setting`
   - `f7c1aed fix: gate nutrition review llm calls`
