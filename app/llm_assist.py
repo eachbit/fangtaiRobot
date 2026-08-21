@@ -54,7 +54,7 @@ def request_llm_constraint_patch(messages: list[str]) -> dict[str, Any] | None:
     if not is_llm_enabled():
         return None
     api_key = os.environ["FANGTAI_LLM_API_KEY"]
-    model = os.environ.get("FANGTAI_LLM_MODEL", "gpt-4o-mini")
+    model = os.environ.get("FANGTAI_LLM_MODEL", "gpt-5.4-mini")
     timeout = float(os.environ.get("FANGTAI_LLM_TIMEOUT", "2.5"))
     payload = {
         "model": model,

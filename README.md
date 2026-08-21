@@ -193,7 +193,7 @@ docker save fangtai-robot:latest -o fangtai-robot.tar
 ```bash
 FANGTAI_LLM_BASE_URL=https://api.example.com/
 FANGTAI_LLM_API_KEY=sk-...
-FANGTAI_LLM_MODEL=gpt-4o-mini
+FANGTAI_LLM_MODEL=gpt-5.4-mini
 FANGTAI_LLM_TIMEOUT=2.5
 ```
 
