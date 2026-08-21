@@ -109,10 +109,19 @@ def extract_constraints(messages: list[str], user: UserProfile | None = None) ->
         constraints.people_count = _parse_chinese_number(people_match.group(1))
     elif "一家四口" in text:
         constraints.people_count = 4
+    else:
+        constraints.people_count = _extract_family_people_count(text)
 
     dish_count_match = re.search(r"(?:推荐|安排|来|做|给我)?\s*([一二两三四五六七八九十\d]+)\s*道(?:菜|餐|饭)?", text)
     if dish_count_match:
         constraints.requested_dish_count = _parse_chinese_number(dish_count_match.group(1))
+    else:
+        dish_count_match = re.search(
+            r"(?:推荐|安排|来|做|给我|整桌来)?\s*([一二两三四五六七八九十\d]+)\s*个菜",
+            text,
+        )
+        if dish_count_match:
+            constraints.requested_dish_count = _parse_chinese_number(dish_count_match.group(1))
 
     constraints.avoid_tastes.extend(_extract_avoid_tastes(text))
 
@@ -274,6 +283,22 @@ def _remove_blocked_preferred_ingredients(preferred: list[str], blocked: list[st
             continue
         result.append(ingredient)
     return result
+
+
+def _extract_family_people_count(text: str) -> int | None:
+    patterns = [
+        r"([一二两三四五六七八九十\d]+)\s*大\s*([一二两三四五六七八九十\d]+)\s*小",
+        r"([一二两三四五六七八九十\d]+)\s*个?大人\s*([一二两三四五六七八九十\d]+)\s*个?(?:小孩|孩子|儿童)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        adult_count = _parse_chinese_number(match.group(1))
+        child_count = _parse_chinese_number(match.group(2))
+        if adult_count is not None and child_count is not None:
+            return adult_count + child_count
+    return None
 
 
 def _parse_chinese_number(value: str) -> int | None:

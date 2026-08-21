@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.agent import get_dialog_cases, get_recipes, get_users, recommend
+from app.constraints import extract_constraints
 
 
 def main():
@@ -156,6 +157,10 @@ def main():
     assert nutrition["per_person"]["kcal"] == round(nutrition["table"]["totals"]["kcal"] / 4, 1)
     assert 0 <= nutrition["confidence"]["coverage_ratio"] <= 1
     assert nutrition_result["score_card"]["nutrition_balance"] in {"high", "medium", "low"}
+
+    family_count = extract_constraints(["四大一小吃午饭，不吃鸡蛋，整桌来五个菜"])
+    assert family_count.people_count == 5
+    assert family_count.requested_dish_count == 5
 
     nutrition_targeted = recommend(None, ["我有高血压，也想减脂，推荐4道菜，尽量清淡一点"])
     targeted = nutrition_targeted["nutrition"]["per_person"]
