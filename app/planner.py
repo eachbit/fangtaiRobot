@@ -3,6 +3,7 @@ from __future__ import annotations
 from .health_rules import check_recipe
 from .models import Constraints, Recipe, UserProfile
 from .nutrition import estimate_menu_nutrition
+from .nutrition_review import build_nutrition_review
 from .recipe_features import classify_recipe, is_bad_breakfast
 from .retriever import rank_recipes, score_recipe
 
@@ -43,10 +44,12 @@ def plan_meal(
         )
 
     nutrition = estimate_menu_nutrition(menu, constraints)
+    nutrition_review = build_nutrition_review(menu, nutrition, constraints, warnings)
     score_card = build_score_card(menu, constraints, selected, changes, nutrition)
     return {
         "menu": menu,
         "nutrition": nutrition,
+        "nutrition_review": nutrition_review,
         "score_card": score_card,
         "changes": changes,
         "warnings": warnings,

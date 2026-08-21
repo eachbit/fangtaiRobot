@@ -60,13 +60,14 @@ Content-Type: application/json
 }
 ```
 
-返回结果会包含 `session_id`、`menu_version`、`history`、`changes`、`nutrition`、`score_card`、`warnings` 和 `answer`。
+返回结果会包含 `session_id`、`menu_version`、`history`、`changes`、`nutrition`、`nutrition_review`、`score_card`、`warnings` 和 `answer`。
 
 关键响应字段：
 
 - `menu`：推荐菜品列表，所有 `name` 均来自本地官方菜谱库。
 - `constraints`：从健康档案和多轮消息中抽取的餐次、人数、菜数、过敏、忌口、口味、健康目标等结构化约束。
 - `nutrition`：整桌和人均热量、蛋白质、脂肪、碳水、钠等离线估算结果，同时保留 `confidence`、`missing_ingredients` 和估算假设。该结果用于竞赛解释和排序，不作为医学诊断。
+- `nutrition_review`：基于本地营养数值生成的结构化评审，包含 `summary`、`risk_flags`、`suggestions`、`confidence` 和 `llm_assist`。外部模型开启时只可增强评审话术，不会覆盖 `nutrition` 数值或新增菜单。
 - `changes`：多轮修改状态，`mode` 可能为 `new_menu`、`minimal_revision` 或 `rollback`，并给出保留、替换和修改数量。
 - `score_card`：菜谱真实性、过敏/忌口、健康、口味、场景、最小修改和营养状态的结构化评分。
 - `warnings`：健康风险、约束冲突或营养估算提示。
@@ -195,9 +196,10 @@ FANGTAI_LLM_BASE_URL=https://api.example.com/
 FANGTAI_LLM_API_KEY=sk-...
 FANGTAI_LLM_MODEL=gpt-5.4-mini
 FANGTAI_LLM_TIMEOUT=2.5
+FANGTAI_LLM_NUTRITION_REVIEW=1
 ```
 
-外部模型只用于补充自然语言约束抽取；官方菜谱真实性、过敏/忌口过滤、菜品数量、多轮保留和回滚仍由本地规则校验。未配置密钥、请求超时或中转站不可用时，服务会自动回退到完全离线规则链路。
+外部模型默认只用于补充自然语言约束抽取。设置 `FANGTAI_LLM_NUTRITION_REVIEW=1` 后，会额外辅助 `nutrition_review` 的营养评审话术和建议；官方菜谱真实性、过敏/忌口过滤、菜品数量、营养数值、多轮保留和回滚仍由本地规则校验。未配置密钥、请求超时或中转站不可用时，服务会自动回退到完全离线规则链路。
 
 此前最后已知公网地址：
 

@@ -157,6 +157,9 @@ def main():
     assert nutrition["per_person"]["kcal"] == round(nutrition["table"]["totals"]["kcal"] / 4, 1)
     assert 0 <= nutrition["confidence"]["coverage_ratio"] <= 1
     assert nutrition_result["score_card"]["nutrition_balance"] in {"high", "medium", "low"}
+    assert nutrition_result["nutrition_review"]["source"] == "local"
+    assert nutrition_result["nutrition_review"]["llm_assist"]["used"] is False
+    assert "per_person" not in nutrition_result["nutrition_review"]
 
     family_count = extract_constraints(["四大一小吃午饭，不吃鸡蛋，整桌来五个菜"])
     assert family_count.people_count == 5
