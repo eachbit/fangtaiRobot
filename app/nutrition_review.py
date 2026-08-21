@@ -41,6 +41,12 @@ def build_nutrition_review(
             "source": "local",
             "llm_assist": {"enabled": False, "used": False, "error": None},
         }
+    if not _should_request_llm_review(local_review, nutrition, constraints):
+        return {
+            **local_review,
+            "source": "local",
+            "llm_assist": {"enabled": True, "used": False, "error": None, "skipped": "low_risk"},
+        }
 
     provider = provider or request_nutrition_review_patch
     try:
@@ -100,6 +106,19 @@ def request_nutrition_review_patch(payload: dict[str, Any]) -> dict[str, Any] | 
         data = json.loads(response.read().decode("utf-8"))
     content = data["choices"][0]["message"]["content"]
     return _parse_json_object(content)
+
+
+def _should_request_llm_review(
+    local_review: dict[str, Any],
+    nutrition: dict[str, Any],
+    constraints: Constraints,
+) -> bool:
+    if constraints.health_goals:
+        return True
+    if nutrition.get("balance_level") != "high":
+        return True
+    severe_flags = set(local_review.get("risk_flags") or []) - {"fiber_low"}
+    return bool(severe_flags)
 
 
 def _local_review(nutrition: dict[str, Any], constraints: Constraints, warnings: list[str]) -> dict[str, Any]:

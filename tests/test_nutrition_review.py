@@ -132,11 +132,36 @@ def test_llm_nutrition_review_only_marks_fields_returned_by_model():
     assert review["llm_assist"]["applied_fields"] == ["summary"]
 
 
+def test_llm_nutrition_review_skips_external_call_for_low_risk_menu():
+    constraints = Constraints(meal="午餐", people_count=4)
+    nutrition = _sample_nutrition()
+    nutrition["balance_level"] = "high"
+    nutrition["per_person"]["sodium_mg"] = 700
+    nutrition["per_person"]["fiber_g"] = 6
+
+    def unexpected_provider(payload):
+        raise AssertionError("provider should not be called")
+
+    review = build_nutrition_review(
+        _sample_menu(),
+        nutrition,
+        constraints,
+        provider=unexpected_provider,
+        enabled=True,
+    )
+
+    assert review["source"] == "local"
+    assert review["llm_assist"]["enabled"] is True
+    assert review["llm_assist"]["used"] is False
+    assert review["llm_assist"]["skipped"] == "low_risk"
+
+
 def main():
     test_local_nutrition_review_flags_health_goal_risks_without_llm()
     test_llm_nutrition_review_can_enhance_text_but_not_override_numbers_or_schema()
     test_llm_nutrition_review_failure_keeps_local_review()
     test_llm_nutrition_review_only_marks_fields_returned_by_model()
+    test_llm_nutrition_review_skips_external_call_for_low_risk_menu()
     print("ok: nutrition review")
 
 
