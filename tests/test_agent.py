@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -8,6 +9,106 @@ sys.path.insert(0, str(ROOT))
 
 from app.agent import get_dialog_cases, get_recipes, get_users, recommend
 from app.constraints import extract_constraints
+
+
+def test_multiturn_llm_assist_and_review_only_run_for_final_turn():
+    augment_calls = []
+    review_flags = []
+
+    def fake_augment(messages, constraints):
+        augment_calls.append(list(messages))
+        return constraints, {"enabled": True, "used": False}
+
+    def fake_plan_meal(recipes, constraints, user, previous_menu_ids=None, allow_llm_review=True):
+        review_flags.append(allow_llm_review)
+        return {
+            "menu": [],
+            "nutrition": {},
+            "nutrition_review": {},
+            "score_card": {"minimal_change": False},
+            "changes": {
+                "mode": "new_menu",
+                "kept_dishes": [],
+                "replaced_dishes": [],
+                "change_count": 0,
+            },
+            "warnings": [],
+            "answer": "",
+        }
+
+    with patch("app.agent.augment_constraints_with_llm", fake_augment), patch(
+        "app.agent.plan_meal", fake_plan_meal
+    ):
+        recommend(
+            None,
+            [
+                "我有高血压，帮我安排一顿晚饭。",
+                "我不喜欢吃海蛎子。",
+                "推荐4道菜。",
+            ],
+        )
+
+    assert len(augment_calls) == 1
+    assert review_flags == [False, False, True]
+
+
+def test_session_continuations_disable_external_assistance():
+    augment_calls = []
+    review_flags = []
+
+    def fake_augment(messages, constraints):
+        augment_calls.append(list(messages))
+        return constraints, {"enabled": True, "used": False}
+
+    def fake_plan_meal(recipes, constraints, user, previous_menu_ids=None, allow_llm_review=True):
+        review_flags.append(allow_llm_review)
+        return {
+            "menu": [],
+            "nutrition": {},
+            "nutrition_review": {},
+            "score_card": {"minimal_change": False},
+            "changes": {
+                "mode": "new_menu",
+                "kept_dishes": [],
+                "replaced_dishes": [],
+                "change_count": 0,
+            },
+            "warnings": [],
+            "answer": "",
+        }
+
+    with patch("app.agent.augment_constraints_with_llm", fake_augment), patch(
+        "app.agent.plan_meal", fake_plan_meal
+    ):
+        first = recommend(None, ["我有高血压，帮我安排一顿晚饭。"])
+        recommend(
+            None,
+            ["我不喜欢吃海蛎子。"],
+            session_id=first["session_id"],
+        )
+
+    assert len(augment_calls) == 1
+    assert review_flags == [True, False]
+
+
+def test_clear_taste_filters_obvious_spicy_recipes():
+    result = recommend(
+        None,
+        [
+            "4个人吃午餐，先推荐4道菜。",
+            "我不吃鸡蛋，其他菜尽量别动。",
+            "我有高血压，也想减脂，之后的菜尽量清淡一点。",
+        ],
+    )
+    menu_text = " ".join(
+        item["name"] + item["ingredients"] + " ".join(item["labels"])
+        for item in result["menu"]
+    )
+    assert result["constraints"]["taste"] == "清淡"
+    assert not any(
+        term in menu_text
+        for term in ["剁椒", "辣椒", "朝天椒", "干辣椒", "麻辣", "重口味"]
+    )
 
 
 def main():
@@ -200,6 +301,11 @@ def main():
     assert rollback_result["changes"]["source_version"] == 1
     assert rollback_result["menu_version"] == 3
     assert len(rollback_result["history"]) == 3
+    assert "鸡蛋" in rollback_result["constraints"]["avoid_ingredients"]
+    assert all(
+        "蛋" not in f"{item['name']}{item['ingredients']}"
+        for item in rollback_result["menu"]
+    )
 
     rollback_next = recommend(
         None,
@@ -223,6 +329,9 @@ def main():
     assert undo_result["changes"]["mode"] == "rollback"
     assert undo_result["changes"]["source_version"] == 1
 
+    test_multiturn_llm_assist_and_review_only_run_for_final_turn()
+    test_session_continuations_disable_external_assistance()
+    test_clear_taste_filters_obvious_spicy_recipes()
     print(f"ok: {len(recipes)} recipes, {len(users)} users, {len(cases)} dialog cases")
 
 

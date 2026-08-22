@@ -13,6 +13,7 @@ def plan_meal(
     constraints: Constraints,
     user: UserProfile | None,
     previous_menu_ids: list[int] | None = None,
+    allow_llm_review: bool = True,
 ) -> dict:
     ranked = rank_recipes(recipes, constraints, user, limit=120)
     menu_size = _menu_size(constraints)
@@ -44,7 +45,13 @@ def plan_meal(
         )
 
     nutrition = estimate_menu_nutrition(menu, constraints)
-    nutrition_review = build_nutrition_review(menu, nutrition, constraints, warnings)
+    nutrition_review = build_nutrition_review(
+        menu,
+        nutrition,
+        constraints,
+        warnings,
+        enabled=allow_llm_review,
+    )
     score_card = build_score_card(menu, constraints, selected, changes, nutrition)
     return {
         "menu": menu,

@@ -104,6 +104,17 @@ class SessionStore:
             return state
 
     def rollback(self, session_id: str, target_version: int) -> SessionState:
+        return self.rollback_with_context(session_id, target_version)
+
+    def rollback_with_context(
+        self,
+        session_id: str,
+        target_version: int,
+        *,
+        messages: list[str] | None = None,
+        menu_ids: list[int] | None = None,
+        constraints: dict | None = None,
+    ) -> SessionState:
         if type(target_version) is not int or target_version < 1:
             raise ValueError("rollback_version_not_found")
         now = time.time()
@@ -119,9 +130,9 @@ class SessionStore:
             snapshot = MenuSnapshot(
                 version=version,
                 user_id=target.user_id,
-                messages=target.messages,
-                menu_ids=target.menu_ids,
-                constraints=dict(target.constraints),
+                messages=tuple(messages if messages is not None else target.messages),
+                menu_ids=tuple(menu_ids if menu_ids is not None else target.menu_ids),
+                constraints=dict(constraints if constraints is not None else target.constraints),
                 operation="rollback",
                 source_version=target.version,
                 created_at=now,
@@ -130,9 +141,9 @@ class SessionStore:
             state = SessionState(
                 session_id=session_id,
                 user_id=target.user_id,
-                messages=list(target.messages),
-                menu_ids=list(target.menu_ids),
-                constraints=dict(target.constraints),
+                messages=list(messages if messages is not None else target.messages),
+                menu_ids=list(menu_ids if menu_ids is not None else target.menu_ids),
+                constraints=dict(constraints if constraints is not None else target.constraints),
                 menu_version=version,
                 history=history,
                 updated_at=now,

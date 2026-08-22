@@ -5,7 +5,7 @@ from functools import lru_cache
 
 from .constraints import extract_constraints
 from .data_loader import load_dialog_cases, load_recipes, load_users
-from .llm_assist import augment_constraints_with_llm
+from .llm_assist import augment_constraints_with_llm, is_llm_enabled
 from .models import UserProfile
 from .planner import plan_meal
 from .session_store import new_session_id, store
@@ -52,21 +52,42 @@ def recommend(
     if rollback_target is not None:
         if not previous:
             raise ValueError("session_not_found_for_rollback")
+        target_snapshot = next(
+            (item for item in previous.history if item.version == rollback_target),
+            None,
+        )
+        if not target_snapshot:
+            raise ValueError("rollback_version_not_found")
         current_version = previous.menu_version
-        state = store.rollback(previous.session_id, rollback_target)
-        constraints = _extract_constraints(state.messages, user)
-        result = plan_meal(get_recipes(), constraints, user, previous_menu_ids=state.menu_ids)
+        current_messages = list(previous.messages)
+        constraints = _extract_constraints(current_messages, user)
+        result = plan_meal(
+            get_recipes(),
+            constraints,
+            user,
+            previous_menu_ids=list(target_snapshot.menu_ids),
+        )
+        state = store.rollback_with_context(
+            previous.session_id,
+            rollback_target,
+            messages=current_messages,
+            menu_ids=[item["id"] for item in result["menu"]],
+            constraints=constraints.to_dict(),
+        )
         result["changes"] = {
             "mode": "rollback",
-            "kept_dishes": list(state.menu_ids),
-            "replaced_dishes": [],
-            "change_count": 0,
+            "kept_dishes": result["changes"].get("kept_dishes", []),
+            "replaced_dishes": result["changes"].get("replaced_dishes", []),
+            "change_count": result["changes"].get("change_count", 0),
             "from_version": current_version,
             "to_version": state.menu_version,
             "source_version": rollback_target,
         }
         result["score_card"]["minimal_change"] = True
-        result["answer"] = f"已恢复到菜单版本 v{rollback_target}，当前版本为 v{state.menu_version}。"
+        result["answer"] = (
+            f"已恢复到菜单版本 v{rollback_target}，并按当前会话硬约束重新校验，"
+            f"当前版本为 v{state.menu_version}。"
+        )
         return _response(user_id, user, state, constraints, result)
 
     if previous:
@@ -91,11 +112,23 @@ def recommend(
     effective_session_id = state.session_id if state else (session_id or new_session_id())
     result = None
     constraints = None
-    for message in turns:
+    for index, message in enumerate(turns):
+        is_final_turn = index == len(turns) - 1
+        allow_external_assistance = is_final_turn and previous is None
         current_messages.append(message)
-        constraints = _extract_constraints(current_messages, user)
+        constraints = _extract_constraints(
+            current_messages,
+            user,
+            allow_llm=allow_external_assistance,
+        )
         previous_menu_ids = None if _reset_requested([message]) else current_menu_ids
-        result = plan_meal(get_recipes(), constraints, user, previous_menu_ids=previous_menu_ids)
+        result = plan_meal(
+            get_recipes(),
+            constraints,
+            user,
+            previous_menu_ids=previous_menu_ids,
+            allow_llm_review=allow_external_assistance,
+        )
         current_menu_ids = [item["id"] for item in result["menu"]]
         state = store.save(
             effective_session_id,
@@ -128,8 +161,20 @@ def _response(
     }
 
 
-def _extract_constraints(messages: list[str], user: UserProfile | None):
+def _extract_constraints(
+    messages: list[str],
+    user: UserProfile | None,
+    allow_llm: bool = True,
+):
     constraints = extract_constraints(messages, user)
+    if not allow_llm:
+        constraints.inferred_profile["llm_assist"] = {
+            "enabled": is_llm_enabled(),
+            "used": False,
+            "error": None,
+            "skipped": "intermediate_turn",
+        }
+        return constraints
     constraints, meta = augment_constraints_with_llm(messages, constraints)
     constraints.inferred_profile["llm_assist"] = meta
     return constraints

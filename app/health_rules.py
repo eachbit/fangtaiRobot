@@ -8,6 +8,7 @@ HIGH_PURINE = ["海鲜", "虾", "蟹", "贝", "动物内脏", "猪肝", "牛肉�
 HIGH_SUGAR = ["糖", "冰糖", "蜂蜜", "甜", "糖浆", "奶油"]
 HIGH_SALT_OR_FAT = ["腊", "咸", "酱", "油炸", "烧烤", "肥肉"]
 PREGNANCY_CAUTION = ["酒", "咖啡", "生食", "刺身"]
+CLEAR_TASTE_RED_FLAGS = ["辣", "重口味", "麻辣", "剁椒", "朝天椒", "干辣椒"]
 
 
 def check_recipe(recipe: Recipe, constraints: Constraints, user: UserProfile | None) -> dict:
@@ -30,6 +31,8 @@ def check_recipe(recipe: Recipe, constraints: Constraints, user: UserProfile | N
             hard_failures.append("用户要求不甜，但菜谱标签或食材包含甜味")
         if taste == "油" and ("油炸" in text or "肥肉" in text):
             hard_failures.append("用户要求少油，但菜谱标签或食材偏油")
+    if constraints.taste == "清淡" and _contains_any(text, CLEAR_TASTE_RED_FLAGS):
+        hard_failures.append("用户要求清淡，但菜谱包含明显辣味或重口味")
 
     special_groups = []
     if user:

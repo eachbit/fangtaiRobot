@@ -1,6 +1,6 @@
 # 方太个性化膳食规划 Agent 项目交接文档
 
-更新时间：2026-08-21（已部署公网 API、可选外部模型辅助、营养评审与速度门控版本）
+更新时间：2026-08-22（公网最终验收通过、会话速度门控和清淡菜单约束已修复）
 
 这份文档用于新开 Codex 线程时快速恢复项目上下文。新线程应先阅读本文，再检查当前仓库状态，不要重复实现已经完成的功能。
 
@@ -32,18 +32,13 @@ https://github.com/eachbit/fangtaiRobot.git
 当前已知 Git 状态：
 
 - 分支：`codex/audit-docker-readiness`
-- 相对远程状态：2026-08-21 通过 GitHub 网页提交了本文档更新，远端提交为 `8bec6cd docs: refresh project handoff status`；本机 CLI 因代理无法连接 GitHub，暂时保留同内容本地提交 `1044ea2 docs: refresh project handoff status`。继续开发前必须执行 `git status --short --branch`、`git fetch origin codex/audit-docker-readiness` 和 `git log --oneline -8` 确认，再将本地分支对齐到远端；不要覆盖用户已有改动。
+- 本次交接文档修订前本地分支相对远端领先 5 个提交；本次文档修订提交会随当前分支一并推送。推送完成后必须重新执行 `git status --short --branch` 和 `git log --oneline -8` 核对远端状态。
 - 最近关键提交：
-  - `8bec6cd docs: refresh project handoff status`（GitHub 网页远端提交）
-  - `1044ea2 docs: refresh project handoff status`（本机同内容提交，待 fetch 后对齐）
-  - `4c90370 fix: enforce llm speed gates`
-  - `b355a62 feat: add nutrition review timeout setting`
-  - `f7c1aed fix: gate nutrition review llm calls`
-  - `8eaa244 feat: add optional llm nutrition review`
-  - `de06bbf fix: parse family counts and dish units`
-  - `dc2e2b2 fix: default to cinlan available llm model`
-  - `9a28f03 feat: add optional llm constraint assist`
-  - `5b4dc0b fix: tighten public api acceptance readiness`
+  - `7af8eac fix: gate session assistance and filter spicy menus`
+  - `cf5e5b1 docs: add homepage relay-assist demo flow`
+  - `b856b3c fix: gate external assistance to final turn`
+  - `523a46e fix: preserve constraints during menu rollback`
+  - `8e09f48 feat: add competition demo station`
 
 ## 三、已经完成的功能
 
@@ -52,6 +47,7 @@ https://github.com/eachbit/fangtaiRobot.git
 - `app/data_loader.py` 读取本地官方菜谱、50份健康档案和对话用例。
 - `app/retriever.py` 对官方菜谱进行约束过滤和排序。
 - `app/health_rules.py` 执行过敏、忌口和健康风险校验。
+- 用户明确要求清淡时，过滤剁椒、辣椒、麻辣、重口味等明显辣味菜品。
 - `app/planner.py` 负责菜单数量、荤素/主食/汤等类别搭配、最小修改和营养二次重排。
 - 推荐结果始终来自菜谱库，不允许凭空生成菜名。
 
@@ -100,6 +96,7 @@ https://github.com/eachbit/fangtaiRobot.git
 - 营养评审有独立超时 `FANGTAI_LLM_NUTRITION_TIMEOUT`，当前公网建议值为 `3` 秒；
 - 普通低风险菜单不调用外部营养评审模型，避免影响竞赛响应速度；
 - 有健康目标或明显风险时才尝试外部评审，超时则保留本地评审。
+- 使用 `session_id` 续接对话时关闭外部约束辅助和营养评审，避免每一轮重复等待外部模型；不带 `session_id` 提交完整历史时，仅最终轮允许可选外部辅助。
 
 ### 4. 多轮会话、菜单保留和上下文回溯
 
@@ -270,10 +267,10 @@ FANGTAI_LLM_NUTRITION_TIMEOUT=3
 健康检查：http://47.116.110.131:8000/api/health
 服务名：fangtai-robot.service
 服务器目录：/opt/fangtaiRobot
-当前服务器提交：4c90370
+当前服务器代码内容对应提交：7af8eac
 ```
 
-2026-08-21 已验证返回 `status=ok`、2000道菜谱和50份档案。新线程开始后仍必须重新检查：
+2026-08-22 已验证返回 `status=ok`、2000道菜谱和50份档案，并确认 systemd 服务重启后公网接口可用。新线程开始后仍必须重新检查：
 
 ```powershell
 curl.exe http://47.116.110.131:8000/api/health
@@ -290,7 +287,7 @@ systemctl restart fangtai-robot
 
 ## 七、已经验证的测试结果
 
-2026-08-21 在本机执行完整验证：
+2026-08-22 在本机和公网首页执行最终验证：
 
 ```powershell
 python tests/test_llm_assist.py
@@ -317,6 +314,7 @@ git diff --check
 - 多人健康约束、营养估算和营养评审；
 - 多轮菜单保留、完整上下文回放、版本回滚；
 - 审计任务 API、网页演示和 Docker 文件契约。
+- 会话续接外部辅助门控和清淡菜单过滤回归测试。
 
 重点验收输入公网复测：
 
@@ -341,7 +339,28 @@ git diff --check
 - `nutrition.table.people_count=4`；
 - `nutrition_review.source=local`，低风险样例跳过外部营养评审，`nutrition_review.llm_assist.skipped=low_risk`。
 
-2026-08-21 公网速度批测，每类3次，结果均低于官方单轮优秀线8秒：
+2026-08-22 公网首页最终实测：
+
+- 三轮重点流程耗时约 `0.48s`、`0.26s`、`0.31s`；
+- 回滚耗时约 `3.72s`，回滚创建新版本并保留当前鸡蛋忌口；
+- 中转站辅助场景耗时约 `3.30s`，`llm_assist.used=true`，只应用 `people_count`；
+- 清淡场景未再出现剁椒、辣椒粉、朝天椒、干辣椒等明显辣味菜。
+
+固定验收场景最终结果：
+
+- `8/8` 场景通过；
+- 官方评分 `98.8/100`；
+- `0` 个响应超过 8 秒的硬失败；
+- “不吃海蛎子”约 `3.56s`；
+- “多轮追加虾过敏”约 `3.66s`；
+- 仍有 6 条超过 2 秒的性能提示，主要来自可选外部模型等待，不影响 8 秒硬门槛。
+
+此前的公网失败样例已修复：
+
+- 会话续接每轮重复调用营养评审，导致 `10.52s` 和 `12.65s`；
+- 高血压加清淡要求时保留剁椒或辣椒粉菜品。
+
+2026-08-21 公网速度批测历史记录：
 
 | 场景 | 最大耗时 | 说明 |
 | --- | ---: | --- |
@@ -351,7 +370,7 @@ git diff --check
 | 四大一小离线解析 | 0.41s | 本地解析 |
 | 普通清淡晚餐 | 3.69s | 跳过约束中转 |
 
-注意：网络环境会抖动，不能承诺外部中转站永久稳定。因此当前代码通过门控和超时保证外部模型不是硬依赖；官方评测应优先依赖本地确定性链路。
+注意：网络环境会抖动，不能承诺外部中转站永久稳定。因此当前代码通过门控、超时和会话续接禁用策略保证外部模型不是硬依赖；官方评测应优先依赖本地确定性链路。
 
 ## 八、下一步开发顺序
 

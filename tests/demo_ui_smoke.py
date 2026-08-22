@@ -40,6 +40,8 @@ def main():
             page.wait_for_function("document.querySelector('#changeBadge').textContent.includes('已回滚')")
             assert "v3" in page.locator("#metricVersion").inner_text()
             assert page.locator(".dish-card").count() == 4
+            assert "鸡蛋" in page.locator("#constraintList").inner_text()
+            assert all("蛋" not in card.inner_text() for card in page.locator(".dish-card").all())
 
             mobile = browser.new_page(viewport={"width": 390, "height": 844})
             mobile.goto(base_url, wait_until="networkidle")
