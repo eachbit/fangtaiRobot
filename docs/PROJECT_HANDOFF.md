@@ -252,7 +252,7 @@ GET /api/sessions/{session_id}/history
 
 ```bash
 FANGTAI_LLM_BASE_URL=...
-FANGTAI_LLM_API_KEY=...
+FANGTAI_LLM_API_KEY（仅在服务器环境中配置，不写入仓库）
 FANGTAI_LLM_MODEL=gpt-5.4-mini
 FANGTAI_LLM_TIMEOUT=2.5
 FANGTAI_LLM_NUTRITION_REVIEW=1

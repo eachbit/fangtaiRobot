@@ -2,11 +2,13 @@
 
 方太人工智能专项赛：个性化膳食规划 Agent。
 
-## Project Goal
+## 项目概述
 
 构建一个“健康约束可验证”的个性化膳食规划 Agent。系统采用官方菜谱库检索、用户健康档案约束、规则校验和本地规则解释生成，避免直接让大模型幻觉生成不存在的菜品；最终运行链路不依赖外部模型或外网 API。
 
-## Planned Deliverables
+系统提供公网 HTTP API、网页演示和 Docker 部署能力。外部模型可用于复杂自然语言的结构化辅助和营养评审话术，菜谱真实性、过敏/忌口、菜品数量、营养数值和多轮修改由本地逻辑控制。
+
+## 交付内容
 
 - API 服务，用于官方测评调用。
 - 网页演示界面，用于答辩展示。
@@ -16,6 +18,17 @@
 - 多轮对话状态管理。
 - 约束评分卡。
 - 部署文档、技术方案文档、演示材料。
+
+## 项目文档
+
+当前提交材料源稿：
+
+- [提交材料总索引](docs/SUBMISSION_MATERIALS_INDEX.md)
+- [API 接口文档](docs/API_DOCUMENTATION.md)
+- [技术方案](docs/TECHNICAL_SOLUTION.md)
+- [部署与验收说明](docs/DEPLOYMENT_AND_ACCEPTANCE.md)
+- [测试与评测报告](docs/TEST_REPORT.md)
+- [答辩演示脚本](docs/DEMO_SCRIPT.md)
 
 ## Data
 
@@ -33,6 +46,12 @@ python server.py
 
 ```text
 http://127.0.0.1:8000
+```
+
+竞赛录制演示页：
+
+```text
+http://127.0.0.1:8000/demo.html
 ```
 
 健康检查：
@@ -139,7 +158,7 @@ POST /api/audit/jobs/{job_id}/cancel
 
 验收要点：返回 4 道官方菜谱，`people_count=4`、`requested_dish_count=4`，`avoid_ingredients` 包含鸡蛋相关约束，菜单食材和标签中不得命中鸡蛋，追加忌口时应进入 `minimal_revision` 并尽量只替换必要菜品。
 
-## Test
+## 测试验证
 
 运行完整本地验证：
 
@@ -149,6 +168,7 @@ python tests/test_scenario_agents.py
 python tests/test_audit_jobs.py
 python tests/test_server_api.py
 python tests/web_ui_smoke.py
+python tests/demo_ui_smoke.py
 python tests/test_docker_contract.py
 python tests/audit_recommendations.py
 python -m compileall -q app server.py tests
@@ -185,30 +205,19 @@ curl http://127.0.0.1:8000/api/health
 docker save fangtai-robot:latest -o fangtai-robot.tar
 ```
 
-## Public API Deployment
+## 公网部署
 
 服务默认监听 `HOST` 和 `PORT` 环境变量，本地默认为 `127.0.0.1:8000`，Docker 内默认为 `0.0.0.0:8000`。
 
-可选外部模型辅助：
+外部模型为可选增强能力，由服务部署方在服务器内部配置。它只用于补充复杂自然语言约束和营养评审话术，不参与菜品生成、硬约束裁决和营养数值计算。未配置或暂时不可用时，服务会自动回退到本地规则链路。
 
-```bash
-FANGTAI_LLM_BASE_URL=https://api.example.com/
-FANGTAI_LLM_API_KEY=sk-...
-FANGTAI_LLM_MODEL=gpt-5.4-mini
-FANGTAI_LLM_TIMEOUT=2.5
-FANGTAI_LLM_NUTRITION_REVIEW=1
-FANGTAI_LLM_NUTRITION_TIMEOUT=3
-```
-
-外部模型默认只用于补充自然语言约束抽取。设置 `FANGTAI_LLM_NUTRITION_REVIEW=1` 后，会额外辅助 `nutrition_review` 的营养评审话术和建议；可用 `FANGTAI_LLM_NUTRITION_TIMEOUT` 单独控制营养评审等待时间。官方菜谱真实性、过敏/忌口过滤、菜品数量、营养数值、多轮保留和回滚仍由本地规则校验。未配置密钥、请求超时或中转站不可用时，服务会自动回退到完全离线规则链路。
-
-此前最后已知公网地址：
+公网地址：
 
 ```text
 http://47.116.110.131:8000/
 ```
 
-交付前必须重新验证公网接口：
+公网接口验证：
 
 ```powershell
 curl.exe http://47.116.110.131:8000/api/health

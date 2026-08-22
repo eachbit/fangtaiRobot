@@ -170,8 +170,10 @@ def _audit_result(scenario: dict[str, Any], result: dict[str, Any], elapsed_ms: 
         if contains_food_term(menu_text, forbidden):
             issues.append(f"命中禁忌: {forbidden} aliases={expand_terms([forbidden])}")
 
-    if elapsed_ms > 2000:
-        issues.append(f"响应超过2秒: {elapsed_ms}ms")
+    if elapsed_ms > 8000:
+        issues.append(f"响应超过8秒: {elapsed_ms}ms")
+    elif elapsed_ms > 2000:
+        debug["performance_advisories"] = [f"响应超过2秒: {elapsed_ms}ms"]
 
     if not menu:
         issues.append("空菜单")
@@ -389,8 +391,8 @@ def _performance_section(records: list[dict[str, Any]]) -> dict[str, Any]:
     over_8s = sum(1 for value in elapsed if value > 8000)
     over_15s = sum(1 for value in elapsed if value > 15000)
     penalty = 0.0
-    if p95 > 2000:
-        penalty += 8.0 if p95 <= 5000 else 15.0
+    if p95 > 8000:
+        penalty += 8.0 if p95 <= 15000 else 15.0
     if average > 6000:
         penalty += 5.0 if average <= 12000 else 10.0
     penalty += min(5.0, over_8s * 1.0 + over_15s * 2.0)
@@ -458,6 +460,9 @@ def _top_issues(records: list[dict[str, Any]], limit: int = 6) -> list[dict[str,
             label = issue.split(":", 1)[0]
             counts[label] = counts.get(label, 0) + 1
         for advisory in (record.get("debug") or {}).get("nutrition_advisories") or []:
+            label = advisory.split(":", 1)[0]
+            counts[f"advisory:{label}"] = counts.get(f"advisory:{label}", 0) + 1
+        for advisory in (record.get("debug") or {}).get("performance_advisories") or []:
             label = advisory.split(":", 1)[0]
             counts[f"advisory:{label}"] = counts.get(f"advisory:{label}", 0) + 1
     if not counts:

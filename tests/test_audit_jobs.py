@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.audit_jobs import AuditJobManager
-from app.audit_runner import run_audit
+from app.audit_runner import _audit_result, run_audit
 from app.scenario_agents import agent_candidates_to_audit_scenarios, generate_reviewed_candidates
 
 
@@ -139,6 +139,25 @@ def test_agent_generated_nutrition_targets_are_advisory_not_blocking():
     assert record["issues"] == []
     assert "nutrition_evaluation" in record["debug"]
     assert any("nutrition" in item for item in record["debug"]["nutrition_advisories"])
+
+
+def test_agent_generated_performance_over_two_seconds_is_advisory_not_hard_failure():
+    scenario = {
+        **PASSING_SCENARIO,
+        "source": "agent_generated",
+    }
+    result = {
+        "menu": [
+            {"name": "测试菜一", "ingredients": "", "labels": []},
+            {"name": "测试菜二", "ingredients": "", "labels": []},
+            {"name": "测试菜三", "ingredients": "", "labels": []},
+        ],
+    }
+
+    issues, debug = _audit_result(scenario, result, 2501)
+
+    assert issues == []
+    assert debug["performance_advisories"] == ["响应超过2秒: 2501ms"]
 
 
 def test_agent_generated_batch_reports_hard_constraint_passes_separately_from_advisories():

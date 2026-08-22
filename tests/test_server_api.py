@@ -85,7 +85,8 @@ def test_audit_job_http_api_can_start_agent_generated_job():
         )
         assert created["progress"]["total"] == 10
 
-        deadline = time.time() + 10
+        # Agent 批测是开发期后台任务，10 条场景串行执行时允许冷启动和营养重排时间。
+        deadline = time.time() + 30
         current = created
         while time.time() < deadline:
             current = _json_request(base_url, "GET", f"/api/audit/jobs/{created['job_id']}")

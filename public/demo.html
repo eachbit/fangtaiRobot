@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>竞赛演示台 · 方太个性化膳食规划 Agent</title>
+    <link rel="stylesheet" href="/demo.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="demo-header">
+        <div class="brand-lockup">
+          <span class="brand-mark">方太</span>
+          <span class="brand-rule"></span>
+          <span class="brand-caption">AI 食谱赛道 · 演示模式</span>
+        </div>
+        <div class="connection-pill" id="connectionPill">
+          <span class="signal-dot"></span>
+          <span id="connectionText">等待连接</span>
+        </div>
+      </header>
+
+      <main>
+        <section class="hero">
+          <div class="hero-copy">
+            <p class="eyebrow">竞赛演示台 / PUBLIC API DEMO</p>
+            <h1>让每一次修改，<em>都有依据。</em></h1>
+            <p class="hero-lede">
+              这是一套为录制演示准备的操作台。按步骤运行，即可完整展示官方菜谱、
+              多人约束、忌口修改、营养评审和菜单回滚。
+            </p>
+            <div class="hero-actions">
+              <button class="primary-button" id="runAllButton">一键运行演示流程</button>
+              <button class="quiet-button" id="resetButton">重置演示</button>
+            </div>
+          </div>
+          <div class="hero-stamp">
+            <span class="stamp-number">01</span>
+            <span class="stamp-label">录制入口</span>
+            <span class="stamp-line"></span>
+            <span class="stamp-note">从左侧步骤开始</span>
+          </div>
+        </section>
+
+        <section class="workflow-layout">
+          <aside class="workflow-panel">
+            <div class="section-kicker">RECORDING FLOW</div>
+            <h2>录制流程</h2>
+            <p class="panel-intro">每一步都可以单独运行，适合边操作边录制。</p>
+            <nav class="step-list" aria-label="演示步骤">
+              <button class="step-item active" data-step="1">
+                <span class="step-index">01</span>
+                <span class="step-copy"><strong>连接服务</strong><small>确认 API 与数据可用</small></span>
+                <span class="step-state">待运行</span>
+              </button>
+              <button class="step-item" data-step="2">
+                <span class="step-index">02</span>
+                <span class="step-copy"><strong>首轮推荐</strong><small>4 人午餐，4 道菜</small></span>
+                <span class="step-state">待运行</span>
+              </button>
+              <button class="step-item" data-step="3">
+                <span class="step-index">03</span>
+                <span class="step-copy"><strong>最小修改</strong><small>不吃鸡蛋，其他别动</small></span>
+                <span class="step-state">待运行</span>
+              </button>
+              <button class="step-item" data-step="4">
+                <span class="step-index">04</span>
+                <span class="step-copy"><strong>营养评审</strong><small>高血压与减脂场景</small></span>
+                <span class="step-state">待运行</span>
+              </button>
+              <button class="step-item" data-step="5">
+                <span class="step-index">05</span>
+                <span class="step-copy"><strong>版本回滚</strong><small>恢复第一版菜单</small></span>
+                <span class="step-state">待运行</span>
+              </button>
+            </nav>
+            <div class="recording-note">
+              <span class="note-label">旁白建议</span>
+              <p id="narrationText">先确认服务在线，再开始展示菜单生成。</p>
+            </div>
+          </aside>
+
+          <section class="stage-panel">
+            <div class="stage-topline">
+              <div>
+                <div class="section-kicker">LIVE RESULT</div>
+                <h2 id="stageTitle">等待开始演示</h2>
+              </div>
+              <div class="latency-chip" id="latencyChip">-- ms</div>
+            </div>
+
+            <div class="metric-strip" id="metricStrip">
+              <div class="metric-card">
+                <span>服务状态</span>
+                <strong id="metricStatus">未检查</strong>
+              </div>
+              <div class="metric-card">
+                <span>官方菜谱</span>
+                <strong id="metricRecipes">--</strong>
+              </div>
+              <div class="metric-card">
+                <span>当前菜单</span>
+                <strong id="metricDishes">--</strong>
+              </div>
+              <div class="metric-card">
+                <span>菜单版本</span>
+                <strong id="metricVersion">--</strong>
+              </div>
+            </div>
+
+            <div class="command-card">
+              <div class="command-heading">
+                <span class="command-label">本步操作</span>
+                <button class="text-button" id="copyCommandButton">复制输入</button>
+              </div>
+              <p class="command-text" id="commandText">点击左侧步骤开始。</p>
+              <button class="primary-button command-button" id="runStepButton">运行当前步骤</button>
+            </div>
+
+            <div class="result-grid">
+              <section class="result-section menu-section">
+                <div class="result-heading">
+                  <div>
+                    <span class="section-kicker">MENU</span>
+                    <h3>推荐菜单</h3>
+                  </div>
+                  <span class="result-badge" id="changeBadge">等待结果</span>
+                </div>
+                <div class="menu-list" id="menuList">
+                  <div class="empty-state">运行步骤后，这里会展示推荐菜品。</div>
+                </div>
+              </section>
+
+              <section class="result-section">
+                <div class="result-heading">
+                  <div>
+                    <span class="section-kicker">CONSTRAINTS</span>
+                    <h3>约束摘要</h3>
+                  </div>
+                </div>
+                <div class="constraint-list" id="constraintList">
+                  <div class="empty-state">等待约束解析。</div>
+                </div>
+              </section>
+
+              <section class="result-section nutrition-section">
+                <div class="result-heading">
+                  <div>
+                    <span class="section-kicker">NUTRITION</span>
+                    <h3>营养评审</h3>
+                  </div>
+                </div>
+                <div class="nutrition-grid" id="nutritionGrid">
+                  <div class="empty-state">等待营养结果。</div>
+                </div>
+                <p class="review-summary" id="reviewSummary"></p>
+              </section>
+
+              <section class="result-section answer-section">
+                <div class="result-heading">
+                  <div>
+                    <span class="section-kicker">ANSWER</span>
+                    <h3>对用户的回答</h3>
+                  </div>
+                </div>
+                <p class="answer-copy" id="answerCopy">完成步骤后，这里会显示系统生成的中文说明。</p>
+              </section>
+            </div>
+          </section>
+        </section>
+      </main>
+
+      <footer class="demo-footer">
+        <span>方太个性化膳食规划 Agent</span>
+        <span id="footerStatus">公网演示页面</span>
+      </footer>
+    </div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="/demo.js"></script>
+  </body>
+</html>
